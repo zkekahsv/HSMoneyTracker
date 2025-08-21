@@ -1,6 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { motion } from "framer-motion";
+
+// Firebase (선택: 부부 공동 사용용 실시간 동기화)
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, setDoc, onSnapshot } from "firebase/firestore";
 
 const monthKey = new Date().toISOString().slice(0, 7);
 
@@ -33,13 +38,88 @@ function usePersistedState(initial) {
   return [state, setState];
 }
 
-export default function App() {
+export default function AugustBudget() {
   const [model, setModel] = usePersistedState({
     month: monthKey,
     salary: 0,
     categories: DEFAULT_CATEGORIES,
     entries: {},
   });
+
+  // ===== Firebase 상태 & 초기화 =====
+  const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null });
+  const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
+  const [houseInput, setHouseInput] = useState(houseId);
+  const remoteApplyingRef = useRef(false);
+  const saveTimerRef = useRef(null);
+
+  // 로컬에 저장한 Firebase 설정(JSON) 로드 후 초기화
+  useEffect(() => {
+    const cfgRaw = localStorage.getItem("budget-fbconfig");
+    if (!cfgRaw || fb.app) return;
+    try {
+      const cfg = JSON.parse(cfgRaw);
+      const app = initializeApp(cfg);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+      setFb({ app, auth, db, user: auth.currentUser });
+      onAuthStateChanged(auth, (user) => setFb((p) => ({ ...p, user })));
+    } catch (e) {
+      console.warn("Firebase init skipped:", e);
+    }
+  }, [fb.app]);
+
+  const setFirebaseConfigFromPrompt = () => {
+    const raw = prompt("Firebase 설정 JSON을 붙여넣으세요 (apiKey, authDomain, projectId, appId 등)");
+    if (!raw) return;
+    try {
+      JSON.parse(raw); // 유효성 체크
+      localStorage.setItem("budget-fbconfig", raw);
+      alert("저장됨! 새로고침 후 적용됩니다.");
+    } catch {
+      alert("JSON이 올바르지 않습니다.");
+    }
+  };
+
+  const signInGoogle = async () => {
+    if (!fb.auth) return alert("먼저 '연동 설정'으로 Firebase 설정을 저장하세요.");
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(fb.auth, provider);
+  };
+  const signOutAll = async () => { if (fb.auth) await signOut(fb.auth); };
+  const connectHouse = () => {
+    if (!houseInput) return;
+    const id = houseInput.trim();
+    setHouseId(id);
+    localStorage.setItem("budget-houseId", id);
+  };
+
+  // 원격 문서 구독 (실시간 수신)
+  useEffect(() => {
+    if (!fb.db || !fb.user || !houseId) return;
+    const ref = doc(fb.db, "budgets", houseId, "months", monthKey);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data();
+      if (data && data.model) {
+        remoteApplyingRef.current = true;
+        setModel(data.model);
+        remoteApplyingRef.current = false;
+      }
+    });
+    return () => unsub();
+  }, [fb.db, fb.user, houseId]);
+
+  // 변경사항을 원격에 저장 (디바운스)
+  useEffect(() => {
+    if (!fb.db || !fb.user || !houseId) return;
+    if (remoteApplyingRef.current) return; // 원격 적용 중 저장 방지
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const ref = doc(fb.db, "budgets", houseId, "months", monthKey);
+      await setDoc(ref, { model: model, updatedAt: new Date().toISOString() }, { merge: true });
+    }, 400);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [model, fb.db, fb.user, houseId]);
 
   const totalAllocated = useMemo(
     () => model.categories.reduce((sum, c) => sum + (Number(c.amount) || 0), 0),
@@ -123,7 +203,29 @@ export default function App() {
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
           <h1 className="text-xl sm:text-2xl font-bold">8월 가계부 · 월급 분배 & 자동이체 트래커</h1>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Firebase 연동/공유 컨트롤 */}
+            <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
+              연동 설정
+            </button>
+            {fb.user ? (
+              <>
+                <span className="text-sm text-slate-600">로그인됨</span>
+                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+              </>
+            ) : (
+              <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
+            )}
+            <input
+              value={houseInput}
+              onChange={(e) => setHouseInput(e.target.value)}
+              placeholder="가계부 코드(예: FAMILY2025)"
+              className="px-3 py-1.5 rounded-xl border w-40"
+            />
+            <button onClick={connectHouse} className="px-3 py-1.5 rounded-xl text-sm bg-indigo-600 text-white hover:bg-indigo-700">
+              연결
+            </button>
+            {/* 로컬 백업/복원/초기화 */}
             <label className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 cursor-pointer">
               복원
               <input
