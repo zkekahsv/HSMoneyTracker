@@ -7,6 +7,26 @@ import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, setDoc, onSnapshot } from "firebase/firestore";
 
+// --- Vercel 환경변수 우선 사용 (없으면 로컬 연동 설정으로 대체) ---
+const envConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+};
+function getFirebaseConfig() {
+  const hasEnv = Object.values(envConfig).every((v) => typeof v === "string" && v.length > 0);
+  if (hasEnv) return { ...envConfig };
+  try {
+    const raw = localStorage.getItem("budget-fbconfig");
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
 const monthKey = new Date().toISOString().slice(0, 7);
 
 const STORAGE_KEY = `budget-${monthKey}`;
@@ -47,25 +67,26 @@ export default function AugustBudget() {
   });
 
   // ===== Firebase 상태 & 초기화 =====
-  const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null });
+  const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
   const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
   const [houseInput, setHouseInput] = useState(houseId);
   const remoteApplyingRef = useRef(false);
   const saveTimerRef = useRef(null);
 
-  // 로컬에 저장한 Firebase 설정(JSON) 로드 후 초기화
+  // Vercel 환경변수 → 없으면 로컬 저장된 JSON으로 초기화
   useEffect(() => {
-    const cfgRaw = localStorage.getItem("budget-fbconfig");
-    if (!cfgRaw || fb.app) return;
+    if (fb.app) return;
+    const cfg = getFirebaseConfig();
+    if (!cfg) return; // 아직 설정 안 됨
     try {
-      const cfg = JSON.parse(cfgRaw);
       const app = initializeApp(cfg);
       const auth = getAuth(app);
       const db = getFirestore(app);
-      setFb({ app, auth, db, user: auth.currentUser });
+      const hasEnv = Object.values(envConfig).every((v) => typeof v === "string" && v.length > 0);
+      setFb({ app, auth, db, user: auth.currentUser, cfgFromEnv: hasEnv });
       onAuthStateChanged(auth, (user) => setFb((p) => ({ ...p, user })));
     } catch (e) {
-      console.warn("Firebase init skipped:", e);
+      console.warn("Firebase init failed:", e);
     }
   }, [fb.app]);
 
@@ -204,10 +225,14 @@ export default function AugustBudget() {
         <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
           <h1 className="text-xl sm:text-2xl font-bold">8월 가계부 · 월급 분배 & 자동이체 트래커</h1>
           <div className="flex flex-wrap items-center gap-2">
-            {/* Firebase 연동/공유 컨트롤 */}
-            <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
-              연동 설정
-            </button>
+            {/* 환경변수 사용시 배지 표시, 없으면 수동 연동 버튼 */}
+            {fb.cfgFromEnv ? (
+              <span className="px-3 py-1.5 rounded-xl text-xs bg-emerald-100 text-emerald-700">환경변수 연동</span>
+            ) : (
+              <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
+                연동 설정
+              </button>
+            )}
             {fb.user ? (
               <>
                 <span className="text-sm text-slate-600">로그인됨</span>
