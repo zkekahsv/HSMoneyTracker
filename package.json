@@ -22,5 +22,6 @@
     "postcss": "^8.4.41",
     "autoprefixer": "^10.4.19",
     "vite-plugin-pwa": "^0.20.0"
-  }
+  },
+  "engines": { "node": ">=18" }
 }
