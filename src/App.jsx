@@ -2,11 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { motion } from "framer-motion";
 
-// ==== Key ====
-const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM (현재 달)
+// === Month & storage ===
+const monthKey = new Date().toISOString().slice(0, 7);
 const STORAGE_KEY = `budget-${monthKey}`;
 
-// ==== Firebase ====
+// === Firebase ===
 import { initializeApp } from "firebase/app";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import {
@@ -33,8 +33,7 @@ function getFirebaseConfig() {
   return null;
 }
 
-// ==== Defaults & utils ====
-// group.type: 'salary' | 'generic'
+// === Defaults & utils ===
 const DEFAULT_GROUPS = [
   { id: "salary",  name: "월급통장", type: "salary",  pool: 0 },
   { id: "savings", name: "저축통장", type: "generic", pool: 0 },
@@ -66,15 +65,6 @@ function usePersistedState(initial) {
   return [state, setState];
 }
 
-// 오늘 YYYY-MM-DD
-function todayStr() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-
 export default function App() {
   // ====== MODEL ======
   const [model, setModel] = usePersistedState({
@@ -84,7 +74,7 @@ export default function App() {
     entries: {}, // { [catId]: [{date, amount, memo, type:'expense'|'income'}] }
   });
 
-  // 과거 저장본 호환 (group->groupId, salary->groups.salary.pool)
+  // 과거 저장본 호환
   useEffect(() => {
     setModel((m) => {
       let changed = false;
@@ -118,11 +108,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ====== UI 상태 ======
-  const [activeGroupId, setActiveGroupId] = useState("salary");
-  const [selectedDate, setSelectedDate] = useState(todayStr()); // 달력에서 클릭한 날짜 → 입력폼 기본값에 반영
+  // ====== UI ======
+  const [activeGroupId, setActiveGroupId] = useState(DEFAULT_GROUPS[0].id);
 
-  // Firebase state
+  // Firebase
   const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
   const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
   const [houseInput, setHouseInput] = useState(houseId);
@@ -210,7 +199,6 @@ export default function App() {
   );
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
 
-  // 카테고리별 지출/수입 합계
   const expenseByCat = useMemo(() => {
     const out = {}; for (const c of categories) out[c.id] = 0;
     Object.entries(model.entries || {}).forEach(([catId, arr]) => {
@@ -229,25 +217,6 @@ export default function App() {
     return out;
   }, [model.entries, categories]);
 
-  // **달력용**: 현재 활성 그룹의 일자별 합계(이 달만)
-  const calendarData = useMemo(() => {
-    const map = {}; // { 'YYYY-MM-DD': {income, expense} }
-    const activeIds = new Set(catsToShow.map((c) => c.id));
-    const monthPrefix = monthKey + "-"; // ex) "2025-08-"
-    for (const [catId, arr] of Object.entries(model.entries || {})) {
-      if (!activeIds.has(catId)) continue;
-      for (const e of (arr || [])) {
-        if (!e?.date || typeof e.amount !== "number") continue;
-        if (!e.date.startsWith(monthPrefix)) continue;
-        if (!map[e.date]) map[e.date] = { income: 0, expense: 0 };
-        if ((e.type || "expense") === "income") map[e.date].income += e.amount;
-        else map[e.date].expense += e.amount;
-      }
-    }
-    return map;
-  }, [model.entries, catsToShow]);
-
-  // 원형그래프 데이터(현재 그룹)
   const overallPie = useMemo(() => {
     const data = catsToShow.map((c) => ({ name: c.name, value: c.amount }));
     data.push({ name: "남는 돈", value: remainPool });
@@ -280,7 +249,7 @@ export default function App() {
   const addGroup = () => {
     const name = prompt("새 메인 탭 이름을 입력하세요 (예: 비상금통장, 교육비통장)");
     if (!name) return;
-    const isSalary = confirm("이 그룹을 '월급 그룹'으로 설정할까요?\n(월급 입력 UI가 보이고 '남는 돈' 계산이 됩니다)");
+    const isSalary = confirm("이 그룹을 '월급 그룹'으로 설정할까요?");
     const id = `grp_${Date.now().toString(36)}`;
     setModel((m) => ({
       ...m,
@@ -356,7 +325,6 @@ export default function App() {
     if (!confirm("이 달 데이터를 모두 초기화할까요?")) return;
     setModel({ month: monthKey, groups: DEFAULT_GROUPS, categories: DEFAULT_CATEGORIES, entries: {} });
     setActiveGroupId("salary");
-    setSelectedDate(todayStr());
   };
 
   // 파일 백업/복원
@@ -376,7 +344,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
-      {/* ===== Header ===== */}
+      {/* Header */}
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-4 py-4">
           <div className="flex items-center justify-between gap-3">
@@ -418,18 +386,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ==== 0) 달력 (메인 탭 위) ==== */}
-          <div className="mt-3 bg-white rounded-2xl shadow p-4">
-            <h2 className="text-base font-semibold mb-2">이 달 수입·지출 달력</h2>
-            <MonthCalendar
-              ym={monthKey}                 // 현재 달만 (월 전환은 나중에)
-              data={calendarData}           // { 'YYYY-MM-DD': {income, expense} }
-              selectedDate={selectedDate}
-              onSelectDate={setSelectedDate}
-            />
-          </div>
-
-          {/* ==== 메인 탭 바 ==== */}
+          {/* 메인 탭 바 */}
           <div className="mt-3 flex items-center gap-2 flex-wrap">
             {groups.map((g) => (
               <button
@@ -455,7 +412,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* ===== Main ===== */}
+      {/* Main */}
       <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
         {/* 그룹 총액/월급 입력 & 분배 */}
         <section className="grid lg:grid-cols-2 gap-6">
@@ -583,7 +540,7 @@ export default function App() {
                     <div className="bg-slate-50 rounded-xl p-2 text-center">남음 <div className="font-semibold">{KRW(remain)}</div></div>
                   </div>
 
-                  <EntryForm onAdd={(entry) => addEntry(c.id, entry)} disabled={false} selectedDate={selectedDate} />
+                  <EntryForm onAdd={(entry) => addEntry(c.id, entry)} disabled={false} />
 
                   <div className="mt-3 overflow-x-auto">
                     <table className="w-full text-sm">
@@ -620,7 +577,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* 요약(현재 그룹 기준) */}
+        {/* 요약 */}
         <section className="bg-white rounded-2xl shadow p-5">
           <h2 className="text-lg font-semibold mb-2">요약</h2>
           <Summary
@@ -635,72 +592,18 @@ export default function App() {
   );
 }
 
-/* ================= 달력 컴포넌트 ================= */
-function MonthCalendar({ ym, data, selectedDate, onSelectDate }) {
-  // ym: 'YYYY-MM'
-  const [y, m] = ym.split("-").map((n) => parseInt(n, 10)); // m: 1..12? -> 실제 Date에서는 0..11
-  const first = new Date(y, m - 1, 1);
-  const firstWeekday = first.getDay(); // 0=일
-  const daysInMonth = new Date(y, m, 0).getDate();
+// ===== 입력 폼 =====
+function EntryForm({ onAdd, disabled }) {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const defaultDate = `${yyyy}-${mm}-${dd}`;
 
-  const cells = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push(null); // 앞 공백
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null); // 뒤 공백
-
-  const today = todayStr();
-
-  return (
-    <div>
-      <div className="mb-2 text-sm text-slate-500">{y}년 {m}월</div>
-      <div className="grid grid-cols-7 gap-1 text-xs">
-        {["일","월","화","수","목","금","토"].map((w) => (
-          <div key={w} className="py-1 text-center font-medium text-slate-500">{w}</div>
-        ))}
-        {cells.map((d, idx) => {
-          if (d === null) return <div key={idx} className="h-20 rounded-lg bg-slate-50/70" />;
-          const dd = String(d).padStart(2, "0");
-          const iso = `${ym}-${dd}`;
-          const sum = data[iso] || { income: 0, expense: 0 };
-          const isToday = iso === today;
-          const isSelected = iso === selectedDate;
-
-          return (
-            <button
-              key={idx}
-              onClick={() => onSelectDate?.(iso)}
-              className={`h-20 p-2 rounded-lg text-left bg-white border
-                ${isSelected ? "border-indigo-500 ring-2 ring-indigo-200" : "border-slate-200"}
-                ${isToday ? "shadow-inner" : ""}
-              `}
-              title={`${iso} 수입 ${sum.income.toLocaleString("ko-KR")}원 / 지출 ${sum.expense.toLocaleString("ko-KR")}원`}
-            >
-              <div className="text-[11px] font-semibold">{d}</div>
-              <div className="mt-1 leading-4">
-                <div className="text-emerald-600">+{sum.income ? sum.income.toLocaleString("ko-KR") : 0}</div>
-                <div className="text-rose-600">-{sum.expense ? sum.expense.toLocaleString("ko-KR") : 0}</div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      <div className="mt-2 text-xs text-slate-500">※ 달력의 날짜를 누르면 아래 입력폼의 날짜에 자동 적용됩니다.</div>
-    </div>
-  );
-}
-
-/* ================= 입력 폼 ================= */
-function EntryForm({ onAdd, disabled, selectedDate }) {
-  const today = todayStr();
-  const [date, setDate] = useState(selectedDate || today);
+  const [date, setDate] = useState(defaultDate);
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   const [type, setType] = useState("expense");
-
-  // 달력에서 날짜가 바뀌면 폼에도 반영
-  useEffect(() => {
-    if (selectedDate) setDate(selectedDate);
-  }, [selectedDate]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -724,7 +627,7 @@ function EntryForm({ onAdd, disabled, selectedDate }) {
   );
 }
 
-/* ================= 요약 카드 ================= */
+// ===== 요약 카드 =====
 function Summary({ group, allocations, expenseByCat, incomeByCat }) {
   const totalAllocated = allocations.reduce((s, a) => s + (Number(a.amount) || 0), 0);
   const totalUsed = allocations.reduce((s, a) => s + Math.max(0, (expenseByCat[a.id] || 0) - (incomeByCat?.[a.id] || 0)), 0);
