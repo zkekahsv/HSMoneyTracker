@@ -463,7 +463,7 @@ export default function App() {
               {fb.user ? (
                 <>
                   <span className="text-sm text-slate-600">로그인됨</span>
-                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
                 </>
               ) : (
                 <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
@@ -772,7 +772,7 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   useEffect(() => { setDate(selectedDate || todayStr()); }, [selectedDate]);
-  useEffect(() => { if (!catId and categories[0]) setCatId(categories[0].id); }, [categories]);
+  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories]); // <-- && 로 수정됨
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
