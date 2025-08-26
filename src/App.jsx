@@ -114,6 +114,9 @@ export default function App() {
   // 메인 탭: 'calendar' | 그룹 id
   const [mainTab, setMainTab] = useState("calendar");
 
+  // 날짜 클릭 모달
+  const [dayOpen, setDayOpen] = useState(false);
+
   // 스냅샷 상태
   const [snapshots, setSnapshots] = useState([]);
   const [restoreId, setRestoreId] = useState("");
@@ -353,7 +356,7 @@ export default function App() {
               {fb.user ? (
                 <>
                   <span className="text-sm text-slate-600">로그인됨</span>
-                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
                 </>
               ) : (
                 <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
@@ -385,7 +388,12 @@ export default function App() {
 
           {/* 메인 탭: 달력 + 그룹들 + +추가 */}
           <div className="flex items-center gap-2 flex-wrap">
-            <button onClick={() => setMainTab("calendar")} className={`px-4 py-2 rounded-xl text-sm ${mainTab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}>달력</button>
+            <button
+              onClick={() => setMainTab("calendar")}
+              className={`px-4 py-2 rounded-xl text-sm ${mainTab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
+            >
+              달력
+            </button>
             {groups.map((g) => (
               <button
                 key={g.id}
@@ -415,7 +423,12 @@ export default function App() {
         <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
           <section className="bg-white rounded-2xl shadow p-5">
             <h2 className="text-lg font-semibold mb-2">달력 · {ym} 수입/지출 한눈에</h2>
-            <MonthCalendar ym={ym} data={calendarData} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+            <MonthCalendar
+              ym={ym}
+              data={calendarData}
+              selectedDate={selectedDate}
+              onSelectDate={(iso) => { setSelectedDate(iso); setDayOpen(true); }}
+            />
             <div className="mt-4 grid sm:grid-cols-3 gap-3 text-sm">
               <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 수입</div><div className="text-xl font-bold text-emerald-700">{KRW(monthTotals.income)}</div></div>
               <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 지출</div><div className="text-xl font-bold text-rose-700">{KRW(monthTotals.expense)}</div></div>
@@ -562,6 +575,16 @@ export default function App() {
           </section>
         </main>
       )}
+
+      {/* 날짜 상세 모달 */}
+      <DayDetailModal
+        open={dayOpen}
+        onClose={() => setDayOpen(false)}
+        date={selectedDate}
+        categories={categories}
+        entries={model.entries}
+        onRemove={removeEntry}
+      />
     </div>
   );
 }
@@ -761,6 +784,116 @@ function RecentTable({ rows, onRemove }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ===== 일일 상세 모달: 날짜 클릭 시 어떤 통장에서 무엇이 나갔는지 보기 ===== */
+function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) {
+  if (!open) return null;
+
+  // 선택 날짜의 항목 모으기
+  const rows = [];
+  Object.entries(entries || {}).forEach(([catId, arr]) => {
+    const catName = categories.find(c => c.id === catId)?.name || catId;
+    (arr || []).forEach((e, idx) => {
+      if (e.date === date) rows.push({ ...e, catId, idx, catName });
+    });
+  });
+
+  // 카테고리별 합계(지출/수입)
+  const byCat = {};
+  rows.forEach(r => {
+    if (!byCat[r.catId]) byCat[r.catId] = { name: r.catName, income: 0, expense: 0 };
+    const t = (r.type || 'expense') === 'income' ? 'income' : 'expense';
+    byCat[r.catId][t] += Number(r.amount) || 0;
+  });
+
+  // 총계
+  const totals = rows.reduce((acc, r) => {
+    const t = (r.type || 'expense') === 'income' ? 'income' : 'expense';
+    acc[t] += Number(r.amount) || 0;
+    return acc;
+  }, { income: 0, expense: 0 });
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      {/* 배경 */}
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+
+      {/* 모달 카드 */}
+      <div className="relative z-[101] w-[95vw] max-w-3xl max-h-[80vh] overflow-hidden rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <h3 className="text-base sm:text-lg font-semibold">{date} 내역</h3>
+          <button onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">닫기</button>
+        </div>
+
+        <div className="p-4 space-y-4 overflow-auto">
+          {/* 요약 */}
+          <div className="grid sm:grid-cols-3 gap-3 text-sm">
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">총 수입</div>
+              <div className="text-lg font-bold text-emerald-700">{KRW(totals.income)}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">총 지출</div>
+              <div className="text-lg font-bold text-rose-700">{KRW(totals.expense)}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">순이동(수입-지출)</div>
+              <div className="text-lg font-bold">{KRW(totals.income - totals.expense)}</div>
+            </div>
+          </div>
+
+          {/* 카테고리별 합계 배지 */}
+          <div className="flex flex-wrap gap-2 text-xs">
+            {Object.values(byCat).length === 0 ? (
+              <span className="text-slate-400">이 날짜의 기록이 없습니다.</span>
+            ) : (
+              Object.values(byCat).map((g) => (
+                <span key={g.name} className="px-3 py-1 rounded-full bg-slate-100">
+                  {g.name} · 수입 {KRW(g.income)} / 지출 {KRW(g.expense)}
+                </span>
+              ))
+            )}
+          </div>
+
+          {/* 상세 표 */}
+          {rows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="py-1">통장</th>
+                    <th className="py-1">유형</th>
+                    <th className="py-1">금액</th>
+                    <th className="py-1">메모</th>
+                    <th className="py-1">삭제</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={`${r.catId}-${r.idx}-${i}`} className="border-t">
+                      <td className="py-1">{r.catName}</td>
+                      <td className="py-1">{(r.type || 'expense') === 'income' ? '수입' : '지출'}</td>
+                      <td className="py-1">{KRW(r.amount)}</td>
+                      <td className="py-1">{r.memo}</td>
+                      <td className="py-1">
+                        <button
+                          onClick={() => onRemove(r.catId, r.idx)}
+                          className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200"
+                        >
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
