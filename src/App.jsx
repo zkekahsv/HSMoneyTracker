@@ -52,16 +52,10 @@ function collectBudgetLocalStorage() {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    // 월별 데이터
     if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
-    // 환경/연동
     if (key === "budget-fbconfig" || key === "budget-houseId") {
-      items.push({ key, value: localStorage.getItem(key) });
-    }
-    // 자동 스냅샷(로컬 롤링)
-    if (key.startsWith("budget-") && (key.includes("@autosnap:") || key.endsWith("@autosnap:index"))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
   }
@@ -99,11 +93,6 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   return { overwritten, total: obj.items.length };
 }
 
-// ==== 스냅샷 파일 포맷 ====
-function makeSnapshotFilePayload({ ym, createdAt, model }) {
-  return { type: "budget-snapshot", version: 1, ym, createdAt, model };
-}
-
 // ==== 기본 데이터 ====
 const DEFAULT_GROUPS = [
   { id: "salary",  name: "월급통장", type: "salary",  pool: 0 },
@@ -139,9 +128,9 @@ function useMonthlyModel(ym) {
 }
 
 // ==== 롤링 자동백업 (localStorage) ====
-const AUTOSNAP_MAX = 30;                 // 각 월별 최대 보관 개수
+const AUTOSNAP_MAX = 30;             // 각 월별 최대 보관 개수
 const AUTOSNAP_EVERY_MS = 2 * 60 * 1000; // 2분마다 또는 변경 누적 시
-const AUTOSNAP_CHANGE_THRESHOLD = 40;    // 변경 40번 이상이면 즉시
+const AUTOSNAP_CHANGE_THRESHOLD = 40; // 변경 40번 이상이면 즉시
 
 function autosnapKey(ym, ts) { return `budget-${ym}@autosnap:${ts}`; }
 function autosnapIndexKey(ym) { return `budget-${ym}@autosnap:index`; }
@@ -199,13 +188,11 @@ export default function App() {
   const [dayOpen, setDayOpen] = useState(false);
 
   // 스냅샷(클라우드)
+  the
   const [snapshots, setSnapshots] = useState([]);
   const [restoreId, setRestoreId] = useState("");
   const [isSavingSnap, setIsSavingSnap] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
-
-  // 스냅샷 파일 입/출력용 ref
-  const snapFileInputRef = useRef(null);
 
   // 로컬 백업(수동)
   const fileInputRef = useRef(null);
@@ -378,17 +365,6 @@ export default function App() {
     localStorage.setItem("budget-houseId", id);
   };
 
-  // ==== 스냅샷(클라우드) 목록/저장/복원 ====
-  useEffect(() => {
-    const load = async () => {
-      if (!fb.db || !fb.user || !houseId) return setSnapshots([]);
-      const col = collection(fb.db, "budgets", houseId, "months", ym, "snapshots");
-      const qs = await getDocs(query(col, orderBy("createdAt", "desc"), limit(10)));
-      setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
-    };
-    load();
-  }, [fb.db, fb.user, houseId, ym]);
-
   const saveSnapshot = async () => {
     if (!fb.db || !fb.user || !houseId) return alert("먼저 로그인/연결을 해주세요.");
     setIsSavingSnap(true);
@@ -411,49 +387,6 @@ export default function App() {
     setIsRestoring(true);
     try { setModel(snap.model); alert("스냅샷 복원 완료!"); }
     finally { setIsRestoring(false); }
-  };
-
-  // ==== 스냅샷 파일로 내보내기/불러오기 ====
-  const onExportSnapshotFile = () => {
-    if (!restoreId) return alert("내보낼 스냅샷을 먼저 선택하세요.");
-    const snap = snapshots.find((s) => s.id === restoreId);
-    if (!snap) return alert("스냅샷을 찾지 못했습니다.");
-    const payload = makeSnapshotFilePayload({ ym, createdAt: snap.createdAt || new Date().toISOString(), model: snap.model });
-    const filename = `budget-snapshot-${ym}-${(snap.createdAt || "").replaceAll(":","-")}.json`;
-    downloadTextFile(filename, JSON.stringify(payload, null, 2));
-  };
-  const openSnapshotImportDialog = () => snapFileInputRef.current?.click();
-  const onImportSnapshotFileSelected = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const obj = JSON.parse(text);
-      if (!obj || obj.type !== "budget-snapshot" || !obj.model) {
-        alert("스냅샷 파일 형식이 올바르지 않습니다.");
-        return;
-      }
-      // 1) 현재 월 데이터로 즉시 복원
-      const doRestore = confirm("이 스냅샷 파일로 현재 월 데이터를 즉시 복원할까요?");
-      if (doRestore) {
-        setModel(obj.model);
-      }
-      // 2) (선택) 클라우드 스냅샷으로도 추가
-      if (fb.db && fb.user && houseId) {
-        const doUpload = confirm("이 스냅샷을 클라우드 스냅샷 목록에도 추가할까요?");
-        if (doUpload) {
-          const colRef = collection(fb.db, "budgets", houseId, "months", ym, "snapshots");
-          await addDoc(colRef, { model: obj.model, createdAt: new Date().toISOString() });
-          const qs = await getDocs(query(colRef, orderBy("createdAt", "desc"), limit(10)));
-          setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
-          alert("스냅샷 업로드 완료!");
-        }
-      }
-    } catch {
-      alert("스냅샷 파일을 읽는 중 오류가 발생했습니다.");
-    } finally {
-      if (snapFileInputRef.current) snapFileInputRef.current.value = "";
-    }
   };
 
   // ==== 그룹/카테고리/기록 ====
@@ -524,10 +457,16 @@ export default function App() {
   const removeEntry = (catId, idx) =>
     setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: (m.entries?.[catId] || []).filter((_, i) => i !== idx) } }));
 
+  const resetAll = () => {
+    if (!confirm(`${ym} 데이터를 모두 초기화할까요?`)) return;
+    setModel(initialMonthlyModel(ym));
+    setSelectedDate(`${ym}-01`);
+    setMainTab("calendar");
+  };
+
   // ==== 파생값 ====
-  const groupsList = model.groups || [];
-  const activeGroup = groupsList.find((g) => g.id === mainTab);
-  const catsOfActive = (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary" })).filter((c) => c.groupId === activeGroup?.id);
+  const activeGroup = groups.find((g) => g.id === mainTab);
+  const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
   const sumAllocated = useMemo(() => catsOfActive.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsOfActive]);
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
 
@@ -561,11 +500,11 @@ export default function App() {
   const recentEntries = useMemo(() => {
     const list = [];
     Object.entries(model.entries || {}).forEach(([catId, arr]) => {
-      const name = (model.categories || []).find((c) => c.id === catId)?.name || catId;
+      const name = categories.find((c) => c.id === catId)?.name || catId;
       (arr || []).forEach((e, idx) => list.push({ ...e, catId, idx, catName: name }));
     });
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
-  }, [model.entries, model.categories]);
+  }, [model.entries, categories]);
 
   // === UI ===
   return (
@@ -616,43 +555,31 @@ export default function App() {
               <input value={houseInput} onChange={(e) => setHouseInput(e.target.value)} placeholder="가계부 코드(예: FAMILY2025)" className="px-3 py-1.5 rounded-xl border w-40" />
               <button onClick={connectHouse} className="px-3 py-1.5 rounded-xl text-sm bg-indigo-600 text-white hover:bg-indigo-700">연결</button>
 
-              {/* === 클라우드 스냅샷 컨트롤 === */}
               <button onClick={saveSnapshot} disabled={isSavingSnap} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 저장</button>
               <select value={restoreId} onChange={(e) => setRestoreId(e.target.value)} className="px-3 py-1.5 rounded-xl border">
                 <option value="">스냅샷 선택(최근 10개)</option>
-                {snapshots.map((s, idx) => {
+                {snapshots.map((s) => {
                   const t = new Date(s.createdAt);
                   const label = `${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
-                  return <option key={s.id || idx} value={s.id}>{label}</option>;
+                  return <option key={s.id} value={s.id}>{label}</option>;
                 })}
               </select>
               <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
 
-              {/* 스냅샷 파일 입/출력 */}
-              <button onClick={onExportSnapshotFile} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">스냅샷 파일로 저장</button>
-              <button onClick={openSnapshotImportDialog} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">스냅샷 파일 불러오기</button>
-              <input
-                ref={snapFileInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={onImportSnapshotFileSelected}
-              />
-
-              {/* === 전체 데이터 백업 (수동 내보내기/불러오기) === */}
+              {/* === 로컬 백업 (수동 내보내기/불러오기) === */}
               <button
                 onClick={handleExportAll}
                 className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
-                title="모든 월 데이터 + 자동백업 + 설정을 JSON으로 내보내기"
+                title="모든 월 데이터를 JSON으로 내보내기"
               >
-                백업 저장(전체)
+                백업 저장(내보내기)
               </button>
               <button
                 onClick={openImportDialog}
                 className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
                 title="JSON 백업 파일에서 복원"
               >
-                백업 불러오기(전체)
+                백업 불러오기(복원)
               </button>
               <input
                 ref={fileInputRef}
@@ -712,7 +639,7 @@ export default function App() {
                 </div>
               </details>
 
-              {/* 초기화 기능은 요청에 따라 제거됨 */}
+              <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
             </div>
           </div>
 
@@ -776,9 +703,9 @@ export default function App() {
           <section className="bg-white rounded-2xl shadow p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-base font-semibold">{selectedDate} 상세</h3>
-              <GlobalEntryForm categories={model.categories || []} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
+              <GlobalEntryForm categories={categories} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
             </div>
-            <DateEntriesTable date={selectedDate} categories={model.categories || []} entries={model.entries} onRemove={removeEntry} />
+            <DateEntriesTable date={selectedDate} categories={categories} entries={model.entries} onRemove={removeEntry} />
           </section>
 
           <section className="bg-white rounded-2xl shadow p-5">
@@ -918,7 +845,7 @@ export default function App() {
         open={dayOpen}
         onClose={() => setDayOpen(false)}
         date={selectedDate}
-        categories={model.categories || []}
+        categories={categories}
         entries={model.entries}
         onRemove={removeEntry}
       />
@@ -1088,7 +1015,7 @@ function DateEntriesTable({ date, categories, entries, onRemove }) {
   );
 }
 
-/* ===== 일일 상세 모달 ===== */
+/* ===== 일일 상세 모달: 날짜 클릭 시 어떤 통장에서 무엇이 나갔는지 보기 ===== */
 function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) {
   if (!open) return null;
 
