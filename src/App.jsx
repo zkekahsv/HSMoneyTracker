@@ -45,37 +45,23 @@ const shiftYM = (ym, delta) => {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${yy}-${mm}`;
 };
-const daysIn = (ym) => {
-  const [y, m] = ym.split("-").map((n) => parseInt(n, 10));
-  return new Date(y, m, 0).getDate();
-};
-const clampDay = (ym, day) => {
-  const d = Math.max(1, Math.min(daysIn(ym), Number(day) || 1));
-  return String(d).padStart(2, "0");
-};
 
 // ==== 로컬 백업/복원 유틸 ====
-// (모든 월, 자동스냅샷, 프리셋, Firebase설정까지 포함)
 function collectBudgetLocalStorage() {
   const items = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-
     // 월별 데이터
     if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
-    // 자동 스냅샷(로컬 롤링)
-    if (key.startsWith("budget-") && (key.includes("@autosnap:") || key.endsWith("@autosnap:index"))) {
-      items.push({ key, value: localStorage.getItem(key) });
-    }
-    // 프리셋
-    if (key.startsWith("budget-preset")) {
-      items.push({ key, value: localStorage.getItem(key) });
-    }
     // 환경/연동
     if (key === "budget-fbconfig" || key === "budget-houseId") {
+      items.push({ key, value: localStorage.getItem(key) });
+    }
+    // 자동 스냅샷(로컬 롤링)
+    if (key.startsWith("budget-") && (key.includes("@autosnap:") || key.endsWith("@autosnap:index"))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
   }
@@ -113,32 +99,10 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   return { overwritten, total: obj.items.length };
 }
 
-// ==== 스냅샷 파일 포맷(클라우드 스냅샷 내보내기용) ====
+// ==== 스냅샷 파일 포맷 ====
 function makeSnapshotFilePayload({ ym, createdAt, model }) {
   return { type: "budget-snapshot", version: 1, ym, createdAt, model };
 }
-
-// ==== 프리셋(고정지출/자동이체) ====
-const PRESET_ITEMS_KEY = "budget-preset:items";   // [{id, catId, day, type, amount, memo}]
-const PRESET_AUTO_KEY  = "budget-preset:auto";    // "1" | "0"
-
-const loadPresetItems = () => {
-  try {
-    const raw = localStorage.getItem(PRESET_ITEMS_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(arr)) return arr;
-  } catch {}
-  return [];
-};
-const savePresetItems = (items) => {
-  try { localStorage.setItem(PRESET_ITEMS_KEY, JSON.stringify(items)); } catch {}
-};
-const loadPresetAuto = () => {
-  return (localStorage.getItem(PRESET_AUTO_KEY) ?? "1") === "1";
-};
-const savePresetAuto = (v) => {
-  try { localStorage.setItem(PRESET_AUTO_KEY, v ? "1" : "0"); } catch {}
-};
 
 // ==== 기본 데이터 ====
 const DEFAULT_GROUPS = [
@@ -214,7 +178,6 @@ export default function App() {
   const [ym, setYM] = useState(thisYM());
   const [selectedDate, setSelectedDate] = useState(() => `${ym}-01`);
   useEffect(() => { setSelectedDate(`${ym}-01`); }, [ym]);
-
   const [model, setModel] = useMonthlyModel(ym);
 
   // Firebase 상태
@@ -359,10 +322,14 @@ export default function App() {
 
   // 모델 변경 시: 로컬 저장 + 원격 저장 스케줄 + 자동 스냅샷 조건
   useEffect(() => {
+    // 로컬 미러는 훅에서 이미 저장됨
     scheduleRemoteSave(400);
     changeCountRef.current += 1;
     const now = Date.now();
-    if (now - lastAutoSnapTs >= AUTOSNAP_EVERY_MS || changeCountRef.current >= AUTOSNAP_CHANGE_THRESHOLD) {
+    if (
+      now - lastAutoSnapTs >= AUTOSNAP_EVERY_MS ||
+      changeCountRef.current >= AUTOSNAP_CHANGE_THRESHOLD
+    ) {
       const ts = pushAutoSnapshot(ym, model);
       setLastAutoSnapTs(ts);
       setAutoSnaps(listAutoSnapshots(ym));
@@ -370,11 +337,13 @@ export default function App() {
     }
   }, [model]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 페이지 숨김/닫힘 시 즉시 저장 시도 + 스냅샷
+  // 페이지 숨김/닫힘 시 즉시 저장 시도
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "hidden") {
+        // 즉시 스냅샷 1회
         pushAutoSnapshot(ym, model);
+        // 원격 저장 시도
         scheduleRemoteSave(0);
       }
     };
@@ -464,8 +433,12 @@ export default function App() {
         alert("스냅샷 파일 형식이 올바르지 않습니다.");
         return;
       }
+      // 1) 현재 월 데이터로 즉시 복원
       const doRestore = confirm("이 스냅샷 파일로 현재 월 데이터를 즉시 복원할까요?");
-      if (doRestore) setModel(obj.model);
+      if (doRestore) {
+        setModel(obj.model);
+      }
+      // 2) (선택) 클라우드 스냅샷으로도 추가
       if (fb.db && fb.user && houseId) {
         const doUpload = confirm("이 스냅샷을 클라우드 스냅샷 목록에도 추가할까요?");
         if (doUpload) {
@@ -482,60 +455,6 @@ export default function App() {
       if (snapFileInputRef.current) snapFileInputRef.current.value = "";
     }
   };
-
-  // ==== 프리셋 상태 ====
-  const [presetItems, setPresetItems] = useState(loadPresetItems);
-  const [presetAuto, setPresetAuto] = useState(loadPresetAuto);
-  useEffect(() => savePresetItems(presetItems), [presetItems]);
-  useEffect(() => savePresetAuto(presetAuto), [presetAuto]);
-
-  // 월 변경 시 자동 적용 (중복 적용 방지 플래그 사용)
-  useEffect(() => {
-    const flagKey = `budget-${ym}@presetApplied`;
-    if (presetAuto && presetItems.length > 0 && !localStorage.getItem(flagKey)) {
-      const { added } = applyPresetToCurrentMonth(true); // silent
-      if (added > 0) {
-        localStorage.setItem(flagKey, new Date().toISOString());
-      }
-    }
-  }, [ym, presetAuto, presetItems]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function applyPresetToCurrentMonth(silent = false) {
-    if (!presetItems || presetItems.length === 0) {
-      if (!silent) alert("저장된 프리셋이 없습니다.");
-      return { added: 0, skipped: 0, missing: 0 };
-    }
-    let added = 0, skipped = 0, missing = 0;
-    setModel((m) => {
-      const nextEntries = { ...m.entries };
-      presetItems.forEach((it) => {
-        const catId = it.catId;
-        const catExists = (m.categories || []).some((c) => c.id === catId);
-        if (!catExists) { missing++; return; }
-        const dd = clampDay(ym, it.day);
-        const date = `${ym}-${dd}`;
-        const type = it.type === "income" ? "income" : "expense";
-        const amount = Number(it.amount) || 0;
-        const memo = it.memo || "";
-        const list = nextEntries[catId] || [];
-        const dup = list.some((e) => e.date === date && e.type === type && Number(e.amount) === amount && (e.memo || "") === memo);
-        if (dup) { skipped++; return; }
-        nextEntries[catId] = [...list, { date, type, amount, memo }];
-        added++;
-      });
-      return { ...m, entries: nextEntries };
-    });
-    if (!silent) {
-      const msg = [
-        `프리셋 적용 결과`,
-        `추가: ${added}건`,
-        skipped ? `중복으로 건너뜀: ${skipped}건` : null,
-        missing ? `카테고리 없음으로 건너뜀: ${missing}건` : null,
-      ].filter(Boolean).join("\n");
-      alert(msg);
-    }
-    return { added, skipped, missing };
-  }
 
   // ==== 그룹/카테고리/기록 ====
   const groups = model.groups || [];
@@ -606,11 +525,13 @@ export default function App() {
     setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: (m.entries?.[catId] || []).filter((_, i) => i !== idx) } }));
 
   // ==== 파생값 ====
-  const activeGroup = groups.find((g) => g.id === mainTab);
-  const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
+  const groupsList = model.groups || [];
+  const activeGroup = groupsList.find((g) => g.id === mainTab);
+  const catsOfActive = (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary" })).filter((c) => c.groupId === activeGroup?.id);
   const sumAllocated = useMemo(() => catsOfActive.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsOfActive]);
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
 
+  // 달력 합계
   const calendarData = useMemo(() => {
     const map = {}; const prefix = ym + "-";
     Object.entries(model.entries || {}).forEach(([_, arr]) => {
@@ -636,14 +557,15 @@ export default function App() {
     return data;
   }, [catsOfActive, remainPool, activeGroup]);
 
+  // 최근 기록 20개
   const recentEntries = useMemo(() => {
     const list = [];
     Object.entries(model.entries || {}).forEach(([catId, arr]) => {
-      const name = categories.find((c) => c.id === catId)?.name || catId;
+      const name = (model.categories || []).find((c) => c.id === catId)?.name || catId;
       (arr || []).forEach((e, idx) => list.push({ ...e, catId, idx, catName: name }));
     });
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
-  }, [model.entries, categories]);
+  }, [model.entries, model.categories]);
 
   // === UI ===
   return (
@@ -686,7 +608,7 @@ export default function App() {
               {fb.user ? (
                 <>
                   <span className="text-sm text-slate-600">로그인됨</span>
-                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
                 </>
               ) : (
                 <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
@@ -721,7 +643,7 @@ export default function App() {
               <button
                 onClick={handleExportAll}
                 className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
-                title="모든 월 데이터 + 자동백업 + 프리셋 + 설정을 JSON으로 내보내기"
+                title="모든 월 데이터 + 자동백업 + 설정을 JSON으로 내보내기"
               >
                 백업 저장(전체)
               </button>
@@ -790,41 +712,7 @@ export default function App() {
                 </div>
               </details>
 
-              {/* === 프리셋(고정지출/자동이체) === */}
-              <details className="ml-1">
-                <summary className="px-3 py-1.5 rounded-xl text-sm bg-indigo-50 text-indigo-800 hover:bg-indigo-100 cursor-pointer">
-                  프리셋(고정지출/자동이체)
-                </summary>
-                <div className="mt-2 p-3 bg-white border rounded-xl shadow-sm space-y-2">
-                  <PresetBuilder
-                    categories={categories}
-                    items={presetItems}
-                    onChangeItems={setPresetItems}
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      className="px-3 py-1.5 rounded-xl text-sm bg-violet-100 text-violet-900 hover:bg-violet-200"
-                      onClick={() => applyPresetToCurrentMonth(false)}
-                      title="프리셋에 저장된 항목들을 이번 달 날짜로 한 번에 추가합니다."
-                    >
-                      이번 달에 적용
-                    </button>
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={presetAuto}
-                        onChange={(e) => setPresetAuto(e.target.checked)}
-                      />
-                      월 이동 시 자동 적용
-                    </label>
-                    <span className="text-xs text-slate-500">
-                      (월 변경 시 한 번만 적용되며, 동일 항목이 있으면 중복 추가되지 않아요)
-                    </span>
-                  </div>
-                </div>
-              </details>
-
-              {/* 초기화 기능은 없음 */}
+              {/* 초기화 기능은 요청에 따라 제거됨 */}
             </div>
           </div>
 
@@ -888,9 +776,9 @@ export default function App() {
           <section className="bg-white rounded-2xl shadow p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-base font-semibold">{selectedDate} 상세</h3>
-              <GlobalEntryForm categories={categories} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
+              <GlobalEntryForm categories={model.categories || []} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
             </div>
-            <DateEntriesTable date={selectedDate} categories={categories} entries={model.entries} onRemove={removeEntry} />
+            <DateEntriesTable date={selectedDate} categories={model.categories || []} entries={model.entries} onRemove={removeEntry} />
           </section>
 
           <section className="bg-white rounded-2xl shadow p-5">
@@ -1030,85 +918,10 @@ export default function App() {
         open={dayOpen}
         onClose={() => setDayOpen(false)}
         date={selectedDate}
-        categories={categories}
+        categories={model.categories || []}
         entries={model.entries}
         onRemove={removeEntry}
       />
-    </div>
-  );
-}
-
-/* ===== 프리셋 빌더 컴포넌트 ===== */
-function PresetBuilder({ categories, items, onChangeItems }) {
-  const [catId, setCatId] = useState(categories[0]?.id || "");
-  const [day, setDay] = useState(1);
-  const [type, setType] = useState("expense");
-  const [amount, setAmount] = useState(0);
-  const [memo, setMemo] = useState("");
-
-  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories]);
-
-  const add = (e) => {
-    e?.preventDefault?.();
-    if (!catId) return alert("통장을 선택하세요.");
-    const amt = Number(amount) || 0;
-    if (amt <= 0) return alert("금액을 입력하세요.");
-    const id = `preset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`;
-    onChangeItems([...(items || []), { id, catId, day: Math.max(1, Math.min(31, Number(day) || 1)), type, amount: amt, memo: memo.trim() }]);
-    setAmount(0); setMemo("");
-  };
-
-  const remove = (id) => onChangeItems((items || []).filter((x) => x.id !== id));
-
-  const catName = (cid) => categories.find((c) => c.id === cid)?.name || "(삭제됨)";
-
-  return (
-    <div>
-      <form onSubmit={add} className="grid grid-cols-1 sm:grid-cols-6 gap-2 mb-2">
-        <select className="px-3 py-2 rounded-xl border" value={catId} onChange={(e) => setCatId(e.target.value)}>
-          {categories.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-        </select>
-        <input type="number" min={1} max={31} className="px-3 py-2 rounded-xl border" placeholder="일(1~31)" value={day} onChange={(e) => setDay(e.target.value)} />
-        <select className="px-3 py-2 rounded-xl border" value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="expense">지출</option>
-          <option value="income">수입</option>
-        </select>
-        <input type="number" inputMode="numeric" className="px-3 py-2 rounded-xl border" placeholder="금액" value={amount} onChange={(e) => setAmount(e.target.value)} />
-        <input type="text" className="px-3 py-2 rounded-xl border" placeholder="메모(선택)" value={memo} onChange={(e) => setMemo(e.target.value)} />
-        <button className="px-3 py-2 rounded-xl text-white bg-violet-600 hover:bg-violet-700">프리셋에 추가</button>
-      </form>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-slate-500">
-              <th className="py-1">통장</th>
-              <th className="py-1">일</th>
-              <th className="py-1">유형</th>
-              <th className="py-1">금액</th>
-              <th className="py-1">메모</th>
-              <th className="py-1">삭제</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(items || []).map((it) => (
-              <tr key={it.id} className="border-t">
-                <td className="py-1">{catName(it.catId)}</td>
-                <td className="py-1">{it.day}</td>
-                <td className="py-1">{it.type === "income" ? "수입" : "지출"}</td>
-                <td className="py-1">{KRW(Number(it.amount) || 0)}</td>
-                <td className="py-1">{it.memo}</td>
-                <td className="py-1">
-                  <button onClick={() => remove(it.id)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
-                </td>
-              </tr>
-            ))}
-            {(items || []).length === 0 && (
-              <tr><td colSpan={6} className="py-2 text-center text-slate-400">저장된 프리셋 항목이 없습니다.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
