@@ -45,27 +45,28 @@ const shiftYM = (ym, delta) => {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${yy}-${mm}`;
 };
+const clampDay = (ym, day) => {
+  const [y, m] = ym.split("-").map((n) => parseInt(n, 10));
+  const last = new Date(y, m, 0).getDate();
+  const d = Math.max(1, Math.min(last, Number(day) || 1));
+  return String(d).padStart(2, "0");
+};
 
-// ==== 백업/복원 유틸 ====
-// 현재 브라우저 localStorage에서 가계부 관련 키를 모두 모으기
+// ==== 로컬 백업/복원 유틸 ====
 function collectBudgetLocalStorage() {
   const items = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    // 월별 데이터
     if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
-    // 선택적 부가 설정들도 같이 백업(있으면)
-    if (key === "budget-fbconfig" || key === "budget-houseId") {
+    if (key === "budget-fbconfig" || key === "budget-houseId" || key === "budget-autos") {
       items.push({ key, value: localStorage.getItem(key) });
     }
   }
   return items;
 }
-
-// 파일 다운로드 헬퍼
 function downloadTextFile(filename, text) {
   const blob = new Blob([text], { type: "application/json;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -77,18 +78,9 @@ function downloadTextFile(filename, text) {
   a.remove();
   URL.revokeObjectURL(url);
 }
-
-// 백업 객체 생성
 function makeBackupPayload() {
-  return {
-    type: "budget-backup",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    items: collectBudgetLocalStorage(), // {key,value}[]
-  };
+  return { type: "budget-backup", version: 2, exportedAt: new Date().toISOString(), items: collectBudgetLocalStorage() };
 }
-
-// 복원: 충돌키 존재 시 덮어쓸지 여부를 묻는 confirm 포함
 async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) {
   if (!obj || obj.type !== "budget-backup" || !Array.isArray(obj.items)) {
     alert("백업 파일 형식이 올바르지 않습니다.");
@@ -110,6 +102,40 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
     }
   }
   return { overwritten, total: obj.items.length };
+}
+
+// ==== 자동이체(Recurring) 영구 저장 ====
+const AUTOS_KEY = "budget-autos";
+function loadAutos() {
+  try {
+    const raw = localStorage.getItem(AUTOS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+function saveAutos(list) {
+  try { localStorage.setItem(AUTOS_KEY, JSON.stringify(list)); } catch {}
+}
+function newAutoTemplate(defaultCatId = "") {
+  return {
+    id: `auto_${Date.now().toString(36)}`,
+    name: "",
+    amount: 0,
+    day: 1,
+    catId: defaultCatId,
+    active: true,
+  };
+}
+function autoMemo(id, name) {
+  return `AUTO:${id} ${name}`;
+}
+function parseAutoIdFromMemo(memo) {
+  if (!memo || typeof memo !== "string") return null;
+  if (!memo.startsWith("AUTO:")) return null;
+  const rest = memo.slice(5);
+  const firstSpace = rest.indexOf(" ");
+  return firstSpace === -1 ? rest : rest.slice(0, firstSpace);
 }
 
 // ==== 기본 데이터 ====
@@ -161,35 +187,96 @@ function useMonthlyModel(ym) {
   return [model, setModel];
 }
 
+// ==== 자동이체 적용 로직 ====
+function applyAutosToModel(model, autos, ym) {
+  if (!autos || autos.length === 0) return model;
+  const salaryCatIds = new Set((model.categories || []).filter(c => (c.groupId || c.group) === "salary").map(c => c.id));
+  if (salaryCatIds.size === 0) return model;
+
+  const entries = model.entries || {};
+  let changed = false;
+
+  const existing = new Map();
+  Object.entries(entries).forEach(([catId, arr]) => {
+    (arr || []).forEach((e, idx) => {
+      if (!e?.memo || typeof e.memo !== "string") return;
+      if (!e.date || !e.date.startsWith(ym + "-")) return;
+      const aid = parseAutoIdFromMemo(e.memo);
+      if (!aid) return;
+      existing.set(aid, { catId, idx, entry: e });
+    });
+  });
+
+  const removeAt = (catId, idx) => {
+    const arr = entries[catId] || [];
+    entries[catId] = arr.filter((_, i) => i !== idx);
+    changed = true;
+  };
+  const addEntry = (catId, entry) => {
+    if (!entries[catId]) entries[catId] = [];
+    entries[catId] = [...entries[catId], entry];
+    changed = true;
+  };
+
+  autos.filter(a => a.active).forEach(a => {
+    if (!a.catId || !salaryCatIds.has(a.catId)) return;
+    const day = clampDay(ym, a.day);
+    const date = `${ym}-${day}`;
+    const memo = autoMemo(a.id, a.name || "");
+    const amount = Number(a.amount) || 0;
+    if (amount <= 0) return;
+
+    const ex = existing.get(a.id);
+    if (!ex) {
+      addEntry(a.catId, { date, amount, memo, type: "expense" });
+      return;
+    }
+    const needMove = ex.catId !== a.catId;
+    const needDate = ex.entry.date !== date;
+    const needAmount = Number(ex.entry.amount) !== amount;
+    const needType = (ex.entry.type || "expense") !== "expense";
+    const needMemo = ex.entry.memo !== memo;
+    if (needMove || needDate || needAmount || needType || needMemo) {
+      removeAt(ex.catId, ex.idx);
+      addEntry(a.catId, { date, amount, memo, type: "expense" });
+    }
+  });
+
+  const autoIds = new Set(autos.map(a => a.id));
+  existing.forEach((v, aid) => {
+    if (!autoIds.has(aid)) {
+      removeAt(v.catId, v.idx);
+    }
+  });
+
+  if (!changed) return model;
+  return { ...model, entries: { ...entries } };
+}
+
 export default function App() {
-  // ===== 월 선택 (이전/다음) =====
   const [ym, setYM] = useState(thisYM());
   const [selectedDate, setSelectedDate] = useState(() => `${ym}-01`);
   useEffect(() => { setSelectedDate(`${ym}-01`); }, [ym]);
 
-  // ===== 월별 모델 =====
   const [model, setModel] = useMonthlyModel(ym);
 
-  // ===== Firebase 상태 & 초기화 =====
+  const [autos, setAutos] = useState(loadAutos());
+  useEffect(() => { saveAutos(autos); }, [autos]);
+
   const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
   const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
   const [houseInput, setHouseInput] = useState(houseId);
   const remoteApplyingRef = useRef(false);
   const saveTimerRef = useRef(null);
 
-  // 메인 탭: 'calendar' | 그룹 id
   const [mainTab, setMainTab] = useState("calendar");
-
-  // 날짜 클릭 모달
   const [dayOpen, setDayOpen] = useState(false);
 
-  // 스냅샷 상태
   const [snapshots, setSnapshots] = useState([]);
   const [restoreId, setRestoreId] = useState("");
   const [isSavingSnap, setIsSavingSnap] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
 
-  // ===== 백업/복원 refs & 상태 =====
   const fileInputRef = useRef(null);
 
   const handleExportAll = () => {
@@ -197,11 +284,7 @@ export default function App() {
     const filename = `budget-backup-${new Date().toISOString().replaceAll(':','-')}.json`;
     downloadTextFile(filename, JSON.stringify(payload, null, 2));
   };
-
-  const openImportDialog = () => {
-    fileInputRef.current?.click();
-  };
-
+  const openImportDialog = () => { fileInputRef.current?.click(); };
   const onImportFileSelected = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -211,26 +294,22 @@ export default function App() {
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
         alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개를 덮어썼습니다.\n현재 보고있는 달(${ym}) 데이터가 포함되어 있으면 화면이 자동 반영됩니다.`);
-        // 현재 보고 있는 달의 키가 갱신되었을 수 있으니 강제 재로딩 또는 setModel 재적용
         setModel((prev) => {
           try {
             const raw = localStorage.getItem(`budget-${ym}`);
             return raw ? JSON.parse(raw) : prev;
-          } catch {
-            return prev;
-          }
+          } catch { return prev; }
         });
+        setAutos(loadAutos());
       }
     } catch (err) {
       console.error(err);
       alert("백업 파일을 읽는 중 오류가 발생했습니다.");
     } finally {
-      // 같은 파일 다시 선택 가능하도록 input 값 초기화
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  // Firebase init
   useEffect(() => {
     if (fb.app) return;
     const cfg = getFirebaseConfig();
@@ -248,7 +327,6 @@ export default function App() {
     }
   }, [fb.app]);
 
-  // 실시간 수신
   useEffect(() => {
     if (!fb.db || !fb.user || !houseId) return;
     const ref = doc(fb.db, "budgets", houseId, "months", ym);
@@ -263,7 +341,6 @@ export default function App() {
     return () => unsub();
   }, [fb.db, fb.user, houseId, ym, setModel]);
 
-  // 디바운스 저장
   useEffect(() => {
     if (!fb.db || !fb.user || !houseId) return;
     if (remoteApplyingRef.current) return;
@@ -275,7 +352,6 @@ export default function App() {
     return () => clearTimeout(saveTimerRef.current);
   }, [model, fb.db, fb.user, houseId, ym]);
 
-  // 스냅샷 목록
   useEffect(() => {
     const load = async () => {
       if (!fb.db || !fb.user || !houseId) return setSnapshots([]);
@@ -286,7 +362,10 @@ export default function App() {
     load();
   }, [fb.db, fb.user, houseId, ym]);
 
-  // ==== 편의 액션 ====
+  useEffect(() => {
+    setModel((m) => applyAutosToModel(m, autos, ym));
+  }, [ym, autos, setModel]);
+
   const setFirebaseConfigFromPrompt = () => {
     const raw = prompt("Firebase 설정 JSON을 붙여넣으세요 (apiKey, authDomain, projectId, appId 등)");
     if (!raw) return;
@@ -330,13 +409,12 @@ export default function App() {
     finally { setIsRestoring(false); }
   };
 
-  // ==== 그룹/카테고리/기록 ====
   const groups = model.groups || [];
   const categories = (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary" }));
 
   useEffect(() => {
     const ids = new Set(groups.map((g) => g.id));
-    if (mainTab !== "calendar" && !ids.has(mainTab)) setMainTab("calendar");
+    if (mainTab !== "calendar" && mainTab !== "auto" && !ids.has(mainTab)) setMainTab("calendar");
   }, [groups, mainTab]);
 
   const updateGroup = (id, patch) =>
@@ -405,13 +483,12 @@ export default function App() {
     setMainTab("calendar");
   };
 
-  // ==== 파생값 ====
   const activeGroup = groups.find((g) => g.id === mainTab);
+  const salaryCats = categories.filter((c) => c.groupId === "salary");
   const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
   const sumAllocated = useMemo(() => catsOfActive.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsOfActive]);
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
 
-  // 달력 합계
   const calendarData = useMemo(() => {
     const map = {}; const prefix = ym + "-";
     Object.entries(model.entries || {}).forEach(([_, arr]) => {
@@ -437,7 +514,6 @@ export default function App() {
     return data;
   }, [catsOfActive, remainPool, activeGroup]);
 
-  // 최근 기록 20개
   const recentEntries = useMemo(() => {
     const list = [];
     Object.entries(model.entries || {}).forEach(([catId, arr]) => {
@@ -449,7 +525,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
-      {/* ===== Header ===== */}
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-4 py-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -463,7 +538,7 @@ export default function App() {
               {fb.user ? (
                 <>
                   <span className="text-sm text-slate-600">로그인됨</span>
-                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
                 </>
               ) : (
                 <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
@@ -482,7 +557,6 @@ export default function App() {
               </select>
               <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
 
-              {/* === 로컬 백업 === */}
               <button
                 onClick={handleExportAll}
                 className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
@@ -509,20 +583,25 @@ export default function App() {
             </div>
           </div>
 
-          {/* 월 이동 스위처 */}
           <div className="flex items-center gap-2">
             <button onClick={() => setYM(shiftYM(ym, -1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">◀ 이전달</button>
             <div className="px-4 py-1.5 rounded-xl bg-white border text-slate-700">{ym}</div>
             <button onClick={() => setYM(shiftYM(ym, 1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">다음달 ▶</button>
           </div>
 
-          {/* 메인 탭: 달력 + 그룹들 + +추가 */}
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setMainTab("calendar")}
               className={`px-4 py-2 rounded-xl text-sm ${mainTab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
             >
               달력
+            </button>
+            <button
+              onClick={() => setMainTab("auto")}
+              className={`px-4 py-2 rounded-xl text-sm ${mainTab === "auto" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
+              title="매월 자동 지출을 설정하세요"
+            >
+              자동이체
             </button>
             {groups.map((g) => (
               <button
@@ -535,7 +614,7 @@ export default function App() {
               </button>
             ))}
             <button onClick={addGroup} className="px-3 py-2 rounded-xl text-sm bg-emerald-100 text-emerald-800 hover:bg-emerald-200">+ 그룹 추가</button>
-            {activeGroup && mainTab !== "calendar" && (
+            {activeGroup && mainTab !== "calendar" && mainTab !== "auto" && (
               <>
                 <button onClick={() => renameGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">이름변경</button>
                 <button onClick={() => toggleGroupType(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
@@ -548,7 +627,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* ===== 메인 컨텐츠 ===== */}
       {mainTab === "calendar" ? (
         <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
           <section className="bg-white rounded-2xl shadow p-5">
@@ -579,9 +657,31 @@ export default function App() {
             <RecentTable rows={recentEntries} onRemove={(e) => removeEntry(e.catId, e.idx)} />
           </section>
         </main>
+      ) : mainTab === "auto" ? (
+        <main className="mx-auto max-w-5xl px-4 py-6 space-y-6">
+          <section className="bg-white rounded-2xl shadow p-5">
+            <h2 className="text-lg font-semibold mb-4">자동이체 목록 (매월 자동 반영)</h2>
+
+            <AutoForm
+              salaryCats={categories.filter((c) => c.groupId === "salary")}
+              onAdd={(a) => setAutos((list) => [...list, a])}
+            />
+
+            <AutoTable
+              autos={autos}
+              salaryCats={categories.filter((c) => c.groupId === "salary")}
+              onChange={(idx, patch) => setAutos(list => list.map((a,i) => i===idx ? { ...a, ...patch } : a))}
+              onDelete={(idx) => setAutos(list => list.filter((_,i) => i!==idx))}
+            />
+
+            <div className="mt-3 text-xs text-slate-500">
+              · 자동이체 항목은 메모에 <code className="bg-slate-100 px-1 rounded">AUTO:아이디</code>로 표시되어 매월 한 번만 반영됩니다.<br/>
+              · 날짜는 해당 달의 말일을 넘지 않도록 자동 조정됩니다(예: 31일 → 30일/28~29일).
+            </div>
+          </section>
+        </main>
       ) : (
         <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
-          {/* 그룹 총액/분배 */}
           <section className="grid lg:grid-cols-2 gap-6">
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
               <h2 className="text-lg font-semibold mb-4">1) {activeGroup?.type === "salary" ? "월급 입력" : "그룹 총액(목표/잔액)"}</h2>
@@ -661,7 +761,6 @@ export default function App() {
             </motion.div>
           </section>
 
-          {/* 상세 카드 */}
           <section className="space-y-4">
             <h2 className="text-lg font-semibold">3) {activeGroup?.name} 통장별 상세 (지출/수입 기록)</h2>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
@@ -706,7 +805,6 @@ export default function App() {
         </main>
       )}
 
-      {/* 날짜 상세 모달 */}
       <DayDetailModal
         open={dayOpen}
         onClose={() => setDayOpen(false)}
@@ -715,6 +813,104 @@ export default function App() {
         entries={model.entries}
         onRemove={removeEntry}
       />
+    </div>
+  );
+}
+
+/* ===== 자동이체 탭: 추가 폼 ===== */
+function AutoForm({ salaryCats, onAdd }) {
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [day, setDay] = useState(1);
+  const [catId, setCatId] = useState(salaryCats[0]?.id || "");
+
+  useEffect(() => {
+    if (!catId && salaryCats[0]) setCatId(salaryCats[0].id);
+  }, [salaryCats, catId]);
+
+  const submit = (e) => {
+    e.preventDefault();
+    const a = Number(amount) || 0;
+    if (!catId) return alert("월급통장 내 통장을 선택하세요.");
+    if (a <= 0) return alert("금액을 입력하세요.");
+    const item = newAutoTemplate(catId);
+    item.name = name.trim() || "자동이체";
+    item.amount = a;
+    item.day = Number(day) || 1;
+    onAdd(item);
+    setName(""); setAmount(0); setDay(1);
+  };
+
+  return (
+    <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-6 gap-2 mb-4">
+      <input type="text" className="px-3 py-2 rounded-xl border" placeholder="항목명 (예: 통신요금, 구독료)"
+             value={name} onChange={(e) => setName(e.target.value)} />
+      <input type="number" inputMode="numeric" className="px-3 py-2 rounded-xl border" placeholder="금액"
+             value={amount} onChange={(e) => setAmount(e.target.value)} />
+      <input type="number" min={1} max={31} className="px-3 py-2 rounded-xl border" placeholder="매월 며칠"
+             value={day} onChange={(e) => setDay(e.target.value)} />
+      <select className="px-3 py-2 rounded-xl border" value={catId} onChange={(e)=>setCatId(e.target.value)}>
+        {salaryCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+      </select>
+      <div className="sm:col-span-2 flex items-center">
+        <button className="px-3 py-2 rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 w-full sm:w-auto">추가</button>
+      </div>
+    </form>
+  );
+}
+
+/* ===== 자동이체 탭: 목록 테이블 ===== */
+function AutoTable({ autos, salaryCats, onChange, onDelete }) {
+  const catMap = useMemo(() => Object.fromEntries(salaryCats.map(c => [c.id, c.name])), [salaryCats]);
+
+  if (!autos || autos.length === 0) {
+    return <div className="text-center text-slate-400">등록된 자동이체가 없습니다. 위 폼에서 추가하세요.</div>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-slate-500">
+            <th className="py-1">사용</th>
+            <th className="py-1">항목명</th>
+            <th className="py-1">금액</th>
+            <th className="py-1">매월</th>
+            <th className="py-1">통장(월급)</th>
+            <th className="py-1">삭제</th>
+          </tr>
+        </thead>
+        <tbody>
+          {autos.map((a, idx) => (
+            <tr key={a.id} className="border-t">
+              <td className="py-1">
+                <input type="checkbox" checked={!!a.active} onChange={(e) => onChange(idx, { active: e.target.checked })} />
+              </td>
+              <td className="py-1">
+                <input type="text" className="px-2 py-1 rounded-lg border w-40" value={a.name}
+                  onChange={(e)=>onChange(idx, { name: e.target.value })} />
+              </td>
+              <td className="py-1">
+                <input type="number" className="px-2 py-1 rounded-lg border w-32" value={a.amount}
+                  onChange={(e)=>onChange(idx, { amount: Number(e.target.value) || 0 })} />
+              </td>
+              <td className="py-1">
+                <input type="number" min={1} max={31} className="px-2 py-1 rounded-lg border w-20" value={a.day}
+                  onChange={(e)=>onChange(idx, { day: Number(e.target.value) || 1 })} />
+              </td>
+              <td className="py-1">
+                <select className="px-2 py-1 rounded-lg border w-44" value={a.catId}
+                  onChange={(e)=>onChange(idx, { catId: e.target.value })}>
+                  {salaryCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </select>
+              </td>
+              <td className="py-1">
+                <button onClick={()=>onDelete(idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -772,7 +968,7 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   useEffect(() => { setDate(selectedDate || todayStr()); }, [selectedDate]);
-  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories]); // <-- && 로 수정됨
+  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories, catId]);
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
@@ -880,8 +1076,6 @@ function DateEntriesTable({ date, categories, entries, onRemove }) {
     </div>
   );
 }
-
-/* ===== 최근 기록 테이블 ===== */
 function RecentTable({ rows, onRemove }) {
   if (!rows || rows.length === 0) {
     return <div className="text-center text-slate-400">최근 기록이 없습니다.</div>;
@@ -917,12 +1111,9 @@ function RecentTable({ rows, onRemove }) {
     </div>
   );
 }
-
-/* ===== 일일 상세 모달: 날짜 클릭 시 어떤 통장에서 무엇이 나갔는지 보기 ===== */
 function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) {
   if (!open) return null;
 
-  // 선택 날짜의 항목 모으기
   const rows = [];
   Object.entries(entries || {}).forEach(([catId, arr]) => {
     const catName = categories.find(c => c.id === catId)?.name || catId;
@@ -931,7 +1122,6 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
     });
   });
 
-  // 카테고리별 합계(지출/수입)
   const byCat = {};
   rows.forEach(r => {
     if (!byCat[r.catId]) byCat[r.catId] = { name: r.catName, income: 0, expense: 0 };
@@ -939,7 +1129,6 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
     byCat[r.catId][t] += Number(r.amount) || 0;
   });
 
-  // 총계
   const totals = rows.reduce((acc, r) => {
     const t = (r.type || 'expense') === 'income' ? 'income' : 'expense';
     acc[t] += Number(r.amount) || 0;
@@ -948,10 +1137,7 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      {/* 배경 */}
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-
-      {/* 모달 카드 */}
       <div className="relative z-[101] w-[95vw] max-w-3xl max-h-[80vh] overflow-hidden rounded-2xl bg-white shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-base sm:text-lg font-semibold">{date} 내역</h3>
@@ -959,7 +1145,6 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
         </div>
 
         <div className="p-4 space-y-4 overflow-auto">
-          {/* 요약 */}
           <div className="grid sm:grid-cols-3 gap-3 text-sm">
             <div className="bg-slate-50 rounded-xl p-3">
               <div className="text-slate-500">총 수입</div>
@@ -975,7 +1160,6 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
             </div>
           </div>
 
-          {/* 카테고리별 합계 배지 */}
           <div className="flex flex-wrap gap-2 text-xs">
             {Object.values(byCat).length === 0 ? (
               <span className="text-slate-400">이 날짜의 기록이 없습니다.</span>
@@ -988,7 +1172,6 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
             )}
           </div>
 
-          {/* 상세 표 */}
           {rows.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
