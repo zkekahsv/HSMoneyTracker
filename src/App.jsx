@@ -46,26 +46,21 @@ const shiftYM = (ym, delta) => {
   return `${yy}-${mm}`;
 };
 
-// ==== 백업/복원 유틸 ====
-// 현재 브라우저 localStorage에서 가계부 관련 키를 모두 모으기
+// ==== 로컬 백업/복원 유틸 ====
 function collectBudgetLocalStorage() {
   const items = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    // 월별 데이터
     if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
-    // 선택적 부가 설정들도 같이 백업(있으면)
     if (key === "budget-fbconfig" || key === "budget-houseId") {
       items.push({ key, value: localStorage.getItem(key) });
     }
   }
   return items;
 }
-
-// 파일 다운로드 헬퍼
 function downloadTextFile(filename, text) {
   const blob = new Blob([text], { type: "application/json;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -77,18 +72,9 @@ function downloadTextFile(filename, text) {
   a.remove();
   URL.revokeObjectURL(url);
 }
-
-// 백업 객체 생성
 function makeBackupPayload() {
-  return {
-    type: "budget-backup",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    items: collectBudgetLocalStorage(), // {key,value}[]
-  };
+  return { type: "budget-backup", version: 1, exportedAt: new Date().toISOString(), items: collectBudgetLocalStorage() };
 }
-
-// 복원: 충돌키 존재 시 덮어쓸지 여부를 묻는 confirm 포함
 async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) {
   if (!obj || obj.type !== "budget-backup" || !Array.isArray(obj.items)) {
     alert("백업 파일 형식이 올바르지 않습니다.");
@@ -101,13 +87,8 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
       const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
       if (!ok) continue;
     }
-    try {
-      localStorage.setItem(key, value);
-      if (exists) overwritten++;
-    } catch {
-      alert(`[${key}] 저장 중 오류가 발생했습니다.`);
-      return false;
-    }
+    try { localStorage.setItem(key, value); if (exists) overwritten++; }
+    catch { alert(`[${key}] 저장 중 오류가 발생했습니다.`); return false; }
   }
   return { overwritten, total: obj.items.length };
 }
@@ -129,79 +110,98 @@ const DEFAULT_CATEGORIES = [
 
 // ==== 월 모델 훅 ====
 function initialMonthlyModel(ym) {
-  return {
-    month: ym,
-    groups: DEFAULT_GROUPS.map((g) => ({ ...g })),
-    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
-    entries: {},
-  };
+  return { month: ym, groups: DEFAULT_GROUPS.map((g) => ({ ...g })), categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })), entries: {} };
 }
 function useMonthlyModel(ym) {
   const STORAGE_KEY = `budget-${ym}`;
   const [model, setModel] = useState(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : initialMonthlyModel(ym);
-    } catch {
-      return initialMonthlyModel(ym);
-    }
+    try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : initialMonthlyModel(ym); }
+    catch { return initialMonthlyModel(ym); }
   });
   useEffect(() => {
     const key = `budget-${ym}`;
-    try {
-      const raw = localStorage.getItem(key);
-      setModel(raw ? JSON.parse(raw) : initialMonthlyModel(ym));
-    } catch {
-      setModel(initialMonthlyModel(ym));
-    }
+    try { const raw = localStorage.getItem(key); setModel(raw ? JSON.parse(raw) : initialMonthlyModel(ym)); }
+    catch { setModel(initialMonthlyModel(ym)); }
   }, [ym]);
-  useEffect(() => {
-    try { localStorage.setItem(`budget-${ym}`, JSON.stringify(model)); } catch {}
-  }, [model, ym]);
+  useEffect(() => { try { localStorage.setItem(`budget-${ym}`, JSON.stringify(model)); } catch {} }, [model, ym]);
   return [model, setModel];
 }
 
+// ==== 롤링 자동백업 (localStorage) ====
+const AUTOSNAP_MAX = 30;             // 각 월별 최대 보관 개수
+const AUTOSNAP_EVERY_MS = 2 * 60 * 1000; // 2분마다 또는 변경 누적 시
+const AUTOSNAP_CHANGE_THRESHOLD = 40; // 변경 40번 이상이면 즉시
+
+function autosnapKey(ym, ts) { return `budget-${ym}@autosnap:${ts}`; }
+function autosnapIndexKey(ym) { return `budget-${ym}@autosnap:index`; }
+
+function pushAutoSnapshot(ym, model) {
+  const ts = Date.now();
+  const key = autosnapKey(ym, ts);
+  try { localStorage.setItem(key, JSON.stringify({ ts, ym, model })); } catch {}
+  let idx = [];
+  try { const raw = localStorage.getItem(autosnapIndexKey(ym)); if (raw) idx = JSON.parse(raw); } catch {}
+  idx.unshift(ts);
+  if (idx.length > AUTOSNAP_MAX) {
+    const removed = idx.splice(AUTOSNAP_MAX);
+    removed.forEach((oldTs) => { try { localStorage.removeItem(autosnapKey(ym, oldTs)); } catch {} });
+  }
+  try { localStorage.setItem(autosnapIndexKey(ym), JSON.stringify(idx)); } catch {}
+  return ts;
+}
+function listAutoSnapshots(ym) {
+  let idx = [];
+  try { const raw = localStorage.getItem(autosnapIndexKey(ym)); if (raw) idx = JSON.parse(raw); } catch {}
+  return idx.map((ts) => {
+    try {
+      const raw = localStorage.getItem(autosnapKey(ym, ts));
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      return { ts, ...obj };
+    } catch { return null; }
+  }).filter(Boolean);
+}
+
+// ==== 메인 App ====
 export default function App() {
-  // ===== 월 선택 (이전/다음) =====
   const [ym, setYM] = useState(thisYM());
   const [selectedDate, setSelectedDate] = useState(() => `${ym}-01`);
   useEffect(() => { setSelectedDate(`${ym}-01`); }, [ym]);
-
-  // ===== 월별 모델 =====
   const [model, setModel] = useMonthlyModel(ym);
 
-  // ===== Firebase 상태 & 초기화 =====
+  // Firebase 상태
   const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
   const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
   const [houseInput, setHouseInput] = useState(houseId);
   const remoteApplyingRef = useRef(false);
   const saveTimerRef = useRef(null);
 
-  // 메인 탭: 'calendar' | 그룹 id
-  const [mainTab, setMainTab] = useState("calendar");
+  // 저장 상태 표시
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error | offline
+  const pendingUploadRef = useRef(null);
+  const retryTimerRef = useRef(null);
+  const retryCountRef = useRef(0);
 
-  // 날짜 클릭 모달
+  // 메인 탭 & 모달
+  const [mainTab, setMainTab] = useState("calendar");
   const [dayOpen, setDayOpen] = useState(false);
 
-  // 스냅샷 상태
+  // 스냅샷(클라우드)
+  the
   const [snapshots, setSnapshots] = useState([]);
   const [restoreId, setRestoreId] = useState("");
   const [isSavingSnap, setIsSavingSnap] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
 
-  // ===== 백업/복원 refs & 상태 =====
+  // 로컬 백업(수동)
   const fileInputRef = useRef(null);
-
   const handleExportAll = () => {
     const payload = makeBackupPayload();
     const filename = `budget-backup-${new Date().toISOString().replaceAll(':','-')}.json`;
     downloadTextFile(filename, JSON.stringify(payload, null, 2));
   };
-
-  const openImportDialog = () => {
-    fileInputRef.current?.click();
-  };
-
+  const openImportDialog = () => fileInputRef.current?.click();
   const onImportFileSelected = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -210,25 +210,35 @@ export default function App() {
       const obj = JSON.parse(text);
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개를 덮어썼습니다.\n현재 보고있는 달(${ym}) 데이터가 포함되어 있으면 화면이 자동 반영됩니다.`);
-        // 현재 보고 있는 달의 키가 갱신되었을 수 있으니 강제 재로딩 또는 setModel 재적용
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개를 덮어썼습니다.`);
         setModel((prev) => {
-          try {
-            const raw = localStorage.getItem(`budget-${ym}`);
-            return raw ? JSON.parse(raw) : prev;
-          } catch {
-            return prev;
-          }
+          try { const raw = localStorage.getItem(`budget-${ym}`); return raw ? JSON.parse(raw) : prev; }
+          catch { return prev; }
         });
       }
-    } catch (err) {
-      console.error(err);
-      alert("백업 파일을 읽는 중 오류가 발생했습니다.");
-    } finally {
-      // 같은 파일 다시 선택 가능하도록 input 값 초기화
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+    } catch { alert("백업 파일을 읽는 중 오류"); }
+    finally { if (fileInputRef.current) fileInputRef.current.value = ""; }
   };
+
+  // === 자동 스냅샷(로컬) ===
+  const [autoSnaps, setAutoSnaps] = useState(() => listAutoSnapshots(ym));
+  const [lastAutoSnapTs, setLastAutoSnapTs] = useState(0);
+  const changeCountRef = useRef(0);
+
+  useEffect(() => {
+    setAutoSnaps(listAutoSnapshots(ym));
+    setLastAutoSnapTs(0);
+    changeCountRef.current = 0;
+  }, [ym]);
+
+  // 온라인/오프라인 감지
+  useEffect(() => {
+    const onOn = () => { setIsOnline(true); if (pendingUploadRef.current) scheduleRemoteSave(0); };
+    const onOff = () => setIsOnline(false);
+    window.addEventListener("online", onOn);
+    window.addEventListener("offline", onOff);
+    return () => { window.removeEventListener("online", onOn); window.removeEventListener("offline", onOff); };
+  }, []);
 
   // Firebase init
   useEffect(() => {
@@ -263,28 +273,77 @@ export default function App() {
     return () => unsub();
   }, [fb.db, fb.user, houseId, ym, setModel]);
 
-  // 디바운스 저장
-  useEffect(() => {
+  // 원격 저장 스케줄링 (디바운스 + 재시도)
+  function scheduleRemoteSave(delay = 400) {
     if (!fb.db || !fb.user || !houseId) return;
     if (remoteApplyingRef.current) return;
     clearTimeout(saveTimerRef.current);
+    pendingUploadRef.current = { ym, model };
     saveTimerRef.current = setTimeout(async () => {
-      const ref = doc(fb.db, "budgets", houseId, "months", ym);
-      await setDoc(ref, { model, updatedAt: new Date().toISOString() }, { merge: true });
-    }, 400);
-    return () => clearTimeout(saveTimerRef.current);
-  }, [model, fb.db, fb.user, houseId, ym]);
+      await doRemoteSave();
+    }, delay);
+  }
 
-  // 스냅샷 목록
+  async function doRemoteSave() {
+    if (!pendingUploadRef.current) return;
+    if (!isOnline) { setSaveState("offline"); return; }
+    if (!fb.db || !fb.user || !houseId) return;
+    const { ym: saveYm, model: saveModel } = pendingUploadRef.current;
+    setSaveState("saving");
+    try {
+      const ref = doc(fb.db, "budgets", houseId, "months", saveYm);
+      await setDoc(ref, { model: saveModel, updatedAt: new Date().toISOString() }, { merge: true });
+      pendingUploadRef.current = null;
+      setSaveState("saved");
+      retryCountRef.current = 0;
+    } catch (e) {
+      console.warn("원격 저장 실패, 재시도 예정:", e);
+      setSaveState("error");
+      // 지수 백오프 재시도
+      retryCountRef.current = Math.min(5, retryCountRef.current + 1);
+      const backoff = Math.min(30000, 500 * Math.pow(2, retryCountRef.current)); // 최대 30초
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = setTimeout(() => doRemoteSave(), backoff);
+    }
+  }
+
+  // 모델 변경 시: 로컬 저장 + 원격 저장 스케줄 + 자동 스냅샷 조건
   useEffect(() => {
-    const load = async () => {
-      if (!fb.db || !fb.user || !houseId) return setSnapshots([]);
-      const col = collection(fb.db, "budgets", houseId, "months", ym, "snapshots");
-      const qs = await getDocs(query(col, orderBy("createdAt", "desc"), limit(10)));
-      setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
+    // 로컬 미러는 훅에서 이미 저장됨
+    scheduleRemoteSave(400);
+    changeCountRef.current += 1;
+    const now = Date.now();
+    if (
+      now - lastAutoSnapTs >= AUTOSNAP_EVERY_MS ||
+      changeCountRef.current >= AUTOSNAP_CHANGE_THRESHOLD
+    ) {
+      const ts = pushAutoSnapshot(ym, model);
+      setLastAutoSnapTs(ts);
+      setAutoSnaps(listAutoSnapshots(ym));
+      changeCountRef.current = 0;
+    }
+  }, [model]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 페이지 숨김/닫힘 시 즉시 저장 시도
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        // 즉시 스냅샷 1회
+        pushAutoSnapshot(ym, model);
+        // 원격 저장 시도
+        scheduleRemoteSave(0);
+      }
     };
-    load();
-  }, [fb.db, fb.user, houseId, ym]);
+    const onBeforeUnload = () => {
+      try { pushAutoSnapshot(ym, model); } catch {}
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [ym, model]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==== 편의 액션 ====
   const setFirebaseConfigFromPrompt = () => {
@@ -447,6 +506,7 @@ export default function App() {
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
   }, [model.entries, categories]);
 
+  // === UI ===
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
       {/* ===== Header ===== */}
@@ -455,6 +515,30 @@ export default function App() {
           <div className="flex items-center justify-between gap-3">
             <h1 className="text-xl sm:text-2xl font-bold">{ym} 가계부</h1>
             <div className="flex flex-wrap items-center gap-2">
+              {/* 저장 상태 표시 */}
+              <span className={
+                "px-3 py-1.5 rounded-xl text-xs " +
+                (saveState === "saving" ? "bg-amber-100 text-amber-800" :
+                 saveState === "saved" ? "bg-emerald-100 text-emerald-700" :
+                 saveState === "offline" ? "bg-slate-200 text-slate-700" :
+                 saveState === "error" ? "bg-rose-100 text-rose-700" :
+                 "bg-slate-100 text-slate-700")
+              }>
+                {isOnline ? "" : "오프라인 · "}
+                {saveState === "saving" && "저장 중..."}
+                {saveState === "saved"  && "저장됨"}
+                {saveState === "offline" && "오프라인 (로컬 저장만)"} 
+                {saveState === "error" && "저장 오류 (자동 재시도 중)"}
+                {saveState === "idle" && "대기"}
+              </span>
+              <button
+                onClick={() => scheduleRemoteSave(0)}
+                className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200"
+                title="즉시 원격 저장 시도"
+              >
+                수동 저장
+              </button>
+
               {fb.cfgFromEnv ? (
                 <span className="px-3 py-1.5 rounded-xl text-xs bg-emerald-100 text-emerald-700">환경변수 연동</span>
               ) : (
@@ -482,7 +566,7 @@ export default function App() {
               </select>
               <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
 
-              {/* === 로컬 백업 === */}
+              {/* === 로컬 백업 (수동 내보내기/불러오기) === */}
               <button
                 onClick={handleExportAll}
                 className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
@@ -504,6 +588,56 @@ export default function App() {
                 className="hidden"
                 onChange={onImportFileSelected}
               />
+
+              {/* === 자동 스냅샷(로컬) 복원 === */}
+              <details className="ml-1">
+                <summary className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 cursor-pointer">자동백업</summary>
+                <div className="mt-2 p-2 bg-white border rounded-xl shadow-sm">
+                  {autoSnaps.length === 0 ? (
+                    <div className="text-xs text-slate-500">아직 자동백업이 없습니다.</div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="px-3 py-1.5 rounded-xl border text-sm"
+                        onChange={(e) => {
+                          const ts = Number(e.target.value);
+                          if (!ts) return;
+                          try {
+                            const raw = localStorage.getItem(autosnapKey(ym, ts));
+                            if (!raw) return alert("자동백업을 찾을 수 없습니다.");
+                            const obj = JSON.parse(raw);
+                            if (!obj?.model) return alert("자동백업 형식 오류");
+                            if (!confirm("이 자동백업으로 복원할까요? 현재 월 데이터가 바뀝니다.")) return;
+                            setModel(obj.model);
+                          } catch {
+                            alert("자동백업 복원 중 오류");
+                          }
+                          e.target.value = "";
+                        }}
+                        defaultValue=""
+                      >
+                        <option value="">선택...</option>
+                        {autoSnaps.map((s) => {
+                          const dt = new Date(s.ts);
+                          const label = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+                          return <option key={s.ts} value={s.ts}>{label}</option>;
+                        })}
+                      </select>
+                      <button
+                        className="px-2 py-1 rounded-lg text-xs bg-slate-100 hover:bg-slate-200"
+                        onClick={() => {
+                          if (!confirm("이 월의 자동백업을 모두 삭제할까요?")) return;
+                          const idx = listAutoSnapshots(ym).map((s)=>s.ts);
+                          idx.forEach((ts)=>{ try { localStorage.removeItem(autosnapKey(ym, ts)); } catch {} });
+                          try { localStorage.removeItem(autosnapIndexKey(ym)); } catch {}
+                          setAutoSnaps([]);
+                        }}
+                      >전체 삭제</button>
+                    </div>
+                  )}
+                  <div className="mt-1 text-[11px] text-slate-500">자동백업은 2분마다 또는 변경이 많이 쌓이면 생성되며 최대 {AUTOSNAP_MAX}개 보관됩니다.</div>
+                </div>
+              </details>
 
               <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
             </div>
@@ -772,7 +906,7 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   useEffect(() => { setDate(selectedDate || todayStr()); }, [selectedDate]);
-  useEffect(() => { if (!catId and categories[0]) setCatId(categories[0].id); }, [categories]);
+  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories]);
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
@@ -873,43 +1007,6 @@ function DateEntriesTable({ date, categories, entries, onRemove }) {
               <td className="py-1">{KRW(e.amount)}</td>
               <td className="py-1">{e.memo}</td>
               <td className="py-1"><button onClick={() => onRemove(e.catId, e.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-/* ===== 최근 기록 테이블 ===== */
-function RecentTable({ rows, onRemove }) {
-  if (!rows || rows.length === 0) {
-    return <div className="text-center text-slate-400">최근 기록이 없습니다.</div>;
-  }
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-slate-500">
-            <th className="py-1">날짜</th>
-            <th className="py-1">통장</th>
-            <th className="py-1">유형</th>
-            <th className="py-1">금액</th>
-            <th className="py-1">메모</th>
-            <th className="py-1">삭제</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={`${r.catId}-${r.idx}-${i}`} className="border-t">
-              <td className="py-1">{r.date}</td>
-              <td className="py-1">{r.catName}</td>
-              <td className="py-1">{(r.type || "expense") === "income" ? "수입" : "지출"}</td>
-              <td className="py-1">{KRW(r.amount)}</td>
-              <td className="py-1">{r.memo}</td>
-              <td className="py-1">
-                <button onClick={() => onRemove(r)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
-              </td>
             </tr>
           ))}
         </tbody>
