@@ -46,6 +46,72 @@ const shiftYM = (ym, delta) => {
   return `${yy}-${mm}`;
 };
 
+// ==== 백업/복원 유틸 ====
+// 현재 브라우저 localStorage에서 가계부 관련 키를 모두 모으기
+function collectBudgetLocalStorage() {
+  const items = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    // 월별 데이터
+    if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
+      items.push({ key, value: localStorage.getItem(key) });
+    }
+    // 선택적 부가 설정들도 같이 백업(있으면)
+    if (key === "budget-fbconfig" || key === "budget-houseId") {
+      items.push({ key, value: localStorage.getItem(key) });
+    }
+  }
+  return items;
+}
+
+// 파일 다운로드 헬퍼
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// 백업 객체 생성
+function makeBackupPayload() {
+  return {
+    type: "budget-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    items: collectBudgetLocalStorage(), // {key,value}[]
+  };
+}
+
+// 복원: 충돌키 존재 시 덮어쓸지 여부를 묻는 confirm 포함
+async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) {
+  if (!obj || obj.type !== "budget-backup" || !Array.isArray(obj.items)) {
+    alert("백업 파일 형식이 올바르지 않습니다.");
+    return false;
+  }
+  let overwritten = 0;
+  for (const { key, value } of obj.items) {
+    const exists = localStorage.getItem(key) !== null;
+    if (exists && askBeforeOverwrite) {
+      const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
+      if (!ok) continue;
+    }
+    try {
+      localStorage.setItem(key, value);
+      if (exists) overwritten++;
+    } catch {
+      alert(`[${key}] 저장 중 오류가 발생했습니다.`);
+      return false;
+    }
+  }
+  return { overwritten, total: obj.items.length };
+}
+
 // ==== 기본 데이터 ====
 const DEFAULT_GROUPS = [
   { id: "salary",  name: "월급통장", type: "salary",  pool: 0 },
@@ -122,6 +188,47 @@ export default function App() {
   const [restoreId, setRestoreId] = useState("");
   const [isSavingSnap, setIsSavingSnap] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+
+  // ===== 백업/복원 refs & 상태 =====
+  const fileInputRef = useRef(null);
+
+  const handleExportAll = () => {
+    const payload = makeBackupPayload();
+    const filename = `budget-backup-${new Date().toISOString().replaceAll(':','-')}.json`;
+    downloadTextFile(filename, JSON.stringify(payload, null, 2));
+  };
+
+  const openImportDialog = () => {
+    fileInputRef.current?.click();
+  };
+
+  const onImportFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
+      if (result) {
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개를 덮어썼습니다.\n현재 보고있는 달(${ym}) 데이터가 포함되어 있으면 화면이 자동 반영됩니다.`);
+        // 현재 보고 있는 달의 키가 갱신되었을 수 있으니 강제 재로딩 또는 setModel 재적용
+        setModel((prev) => {
+          try {
+            const raw = localStorage.getItem(`budget-${ym}`);
+            return raw ? JSON.parse(raw) : prev;
+          } catch {
+            return prev;
+          }
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      alert("백업 파일을 읽는 중 오류가 발생했습니다.");
+    } finally {
+      // 같은 파일 다시 선택 가능하도록 input 값 초기화
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   // Firebase init
   useEffect(() => {
@@ -374,6 +481,29 @@ export default function App() {
                 })}
               </select>
               <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
+
+              {/* === 로컬 백업 === */}
+              <button
+                onClick={handleExportAll}
+                className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
+                title="모든 월 데이터를 JSON으로 내보내기"
+              >
+                백업 저장(내보내기)
+              </button>
+              <button
+                onClick={openImportDialog}
+                className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200"
+                title="JSON 백업 파일에서 복원"
+              >
+                백업 불러오기(복원)
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={onImportFileSelected}
+              />
 
               <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
             </div>
@@ -642,7 +772,7 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   useEffect(() => { setDate(selectedDate || todayStr()); }, [selectedDate]);
-  useEffect(() => { if (!catId && categories[0]) setCatId(categories[0].id); }, [categories]);
+  useEffect(() => { if (!catId and categories[0]) setCatId(categories[0].id); }, [categories]);
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
