@@ -190,12 +190,13 @@ function useMonthlyModel(ym) {
 // ==== 자동이체 적용 로직 ====
 function applyAutosToModel(model, autos, ym) {
   if (!autos || autos.length === 0) return model;
-  const salaryCatIds = new Set((model.categories || []).filter(c => (c.groupId || c.group) === "salary").map(c => c.id));
-  if (salaryCatIds.size === 0) return model;
+  const validCatIds = new Set((model.categories || []).map(c => c.id));
+  if (validCatIds.size === 0) return model;
 
   const entries = model.entries || {};
   let changed = false;
 
+  // 기존 AUTO 항목 인덱싱
   const existing = new Map();
   Object.entries(entries).forEach(([catId, arr]) => {
     (arr || []).forEach((e, idx) => {
@@ -219,7 +220,7 @@ function applyAutosToModel(model, autos, ym) {
   };
 
   autos.filter(a => a.active).forEach(a => {
-    if (!a.catId || !salaryCatIds.has(a.catId)) return;
+    if (!a.catId || !validCatIds.has(a.catId)) return; // 모든 그룹 허용, 존재할 때만
     const day = clampDay(ym, a.day);
     const date = `${ym}-${day}`;
     const memo = autoMemo(a.id, a.name || "");
@@ -484,7 +485,6 @@ export default function App() {
   };
 
   const activeGroup = groups.find((g) => g.id === mainTab);
-  const salaryCats = categories.filter((c) => c.groupId === "salary");
   const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
   const sumAllocated = useMemo(() => catsOfActive.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsOfActive]);
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
@@ -538,7 +538,7 @@ export default function App() {
               {fb.user ? (
                 <>
                   <span className="text-sm text-slate-600">로그인됨</span>
-                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
                 </>
               ) : (
                 <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
@@ -663,20 +663,23 @@ export default function App() {
             <h2 className="text-lg font-semibold mb-4">자동이체 목록 (매월 자동 반영)</h2>
 
             <AutoForm
-              salaryCats={categories.filter((c) => c.groupId === "salary")}
+              groups={groups}
+              categories={categories}
               onAdd={(a) => setAutos((list) => [...list, a])}
             />
 
             <AutoTable
               autos={autos}
-              salaryCats={categories.filter((c) => c.groupId === "salary")}
+              groups={groups}
+              categories={categories}
               onChange={(idx, patch) => setAutos(list => list.map((a,i) => i===idx ? { ...a, ...patch } : a))}
               onDelete={(idx) => setAutos(list => list.filter((_,i) => i!==idx))}
             />
 
             <div className="mt-3 text-xs text-slate-500">
               · 자동이체 항목은 메모에 <code className="bg-slate-100 px-1 rounded">AUTO:아이디</code>로 표시되어 매월 한 번만 반영됩니다.<br/>
-              · 날짜는 해당 달의 말일을 넘지 않도록 자동 조정됩니다(예: 31일 → 30일/28~29일).
+              · 날짜는 해당 달의 말일을 넘지 않도록 자동 조정됩니다(예: 31일 → 30일/28~29일).<br/>
+              · 이제 <b>모든 탭의 통장</b>을 대상으로 지정할 수 있어요.
             </div>
           </section>
         </main>
@@ -818,20 +821,28 @@ export default function App() {
 }
 
 /* ===== 자동이체 탭: 추가 폼 ===== */
-function AutoForm({ salaryCats, onAdd }) {
+function AutoForm({ groups, categories, onAdd }) {
   const [name, setName] = useState("");
   const [amount, setAmount] = useState(0);
   const [day, setDay] = useState(1);
-  const [catId, setCatId] = useState(salaryCats[0]?.id || "");
+  const [groupId, setGroupId] = useState(groups[0]?.id || "salary");
+  const catsOfGroup = useMemo(() => categories.filter(c => c.groupId === groupId), [categories, groupId]);
+  const [catId, setCatId] = useState(catsOfGroup[0]?.id || "");
 
   useEffect(() => {
-    if (!catId && salaryCats[0]) setCatId(salaryCats[0].id);
-  }, [salaryCats, catId]);
+    // 그룹 바꾸면 해당 그룹 첫 번째 통장으로 세팅
+    const first = catsOfGroup[0]?.id || "";
+    setCatId(prev => (prev && catsOfGroup.some(c => c.id === prev)) ? prev : first);
+  }, [groupId, categories]);
+
+  useEffect(() => {
+    if (!groupId && groups[0]) setGroupId(groups[0].id);
+  }, [groups, groupId]);
 
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
-    if (!catId) return alert("월급통장 내 통장을 선택하세요.");
+    if (!catId) return alert("통장을 선택하세요.");
     if (a <= 0) return alert("금액을 입력하세요.");
     const item = newAutoTemplate(catId);
     item.name = name.trim() || "자동이체";
@@ -842,15 +853,18 @@ function AutoForm({ salaryCats, onAdd }) {
   };
 
   return (
-    <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-6 gap-2 mb-4">
-      <input type="text" className="px-3 py-2 rounded-xl border" placeholder="항목명 (예: 통신요금, 구독료)"
+    <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-7 gap-2 mb-4">
+      <input type="text" className="px-3 py-2 rounded-xl border" placeholder="항목명 (예: 생활비통장, 통신요금 등)"
              value={name} onChange={(e) => setName(e.target.value)} />
       <input type="number" inputMode="numeric" className="px-3 py-2 rounded-xl border" placeholder="금액"
              value={amount} onChange={(e) => setAmount(e.target.value)} />
       <input type="number" min={1} max={31} className="px-3 py-2 rounded-xl border" placeholder="매월 며칠"
              value={day} onChange={(e) => setDay(e.target.value)} />
+      <select className="px-3 py-2 rounded-xl border" value={groupId} onChange={(e)=>setGroupId(e.target.value)}>
+        {groups.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+      </select>
       <select className="px-3 py-2 rounded-xl border" value={catId} onChange={(e)=>setCatId(e.target.value)}>
-        {salaryCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+        {catsOfGroup.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
       </select>
       <div className="sm:col-span-2 flex items-center">
         <button className="px-3 py-2 rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 w-full sm:w-auto">추가</button>
@@ -860,8 +874,13 @@ function AutoForm({ salaryCats, onAdd }) {
 }
 
 /* ===== 자동이체 탭: 목록 테이블 ===== */
-function AutoTable({ autos, salaryCats, onChange, onDelete }) {
-  const catMap = useMemo(() => Object.fromEntries(salaryCats.map(c => [c.id, c.name])), [salaryCats]);
+function AutoTable({ autos, groups, categories, onChange, onDelete }) {
+  const catById = useMemo(() => Object.fromEntries(categories.map(c => [c.id, c])), [categories]);
+  const catsByGroup = useMemo(() => {
+    const m = {};
+    groups.forEach(g => { m[g.id] = categories.filter(c => c.groupId === g.id); });
+    return m;
+  }, [groups, categories]);
 
   if (!autos || autos.length === 0) {
     return <div className="text-center text-slate-400">등록된 자동이체가 없습니다. 위 폼에서 추가하세요.</div>;
@@ -876,39 +895,66 @@ function AutoTable({ autos, salaryCats, onChange, onDelete }) {
             <th className="py-1">항목명</th>
             <th className="py-1">금액</th>
             <th className="py-1">매월</th>
-            <th className="py-1">통장(월급)</th>
+            <th className="py-1">탭(그룹)</th>
+            <th className="py-1">통장</th>
             <th className="py-1">삭제</th>
           </tr>
         </thead>
         <tbody>
-          {autos.map((a, idx) => (
-            <tr key={a.id} className="border-t">
-              <td className="py-1">
-                <input type="checkbox" checked={!!a.active} onChange={(e) => onChange(idx, { active: e.target.checked })} />
-              </td>
-              <td className="py-1">
-                <input type="text" className="px-2 py-1 rounded-lg border w-40" value={a.name}
-                  onChange={(e)=>onChange(idx, { name: e.target.value })} />
-              </td>
-              <td className="py-1">
-                <input type="number" className="px-2 py-1 rounded-lg border w-32" value={a.amount}
-                  onChange={(e)=>onChange(idx, { amount: Number(e.target.value) || 0 })} />
-              </td>
-              <td className="py-1">
-                <input type="number" min={1} max={31} className="px-2 py-1 rounded-lg border w-20" value={a.day}
-                  onChange={(e)=>onChange(idx, { day: Number(e.target.value) || 1 })} />
-              </td>
-              <td className="py-1">
-                <select className="px-2 py-1 rounded-lg border w-44" value={a.catId}
-                  onChange={(e)=>onChange(idx, { catId: e.target.value })}>
-                  {salaryCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-                </select>
-              </td>
-              <td className="py-1">
-                <button onClick={()=>onDelete(idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
-              </td>
-            </tr>
-          ))}
+          {autos.map((a, idx) => {
+            const currentCat = catById[a.catId];
+            const currentGroupId = currentCat?.groupId || groups[0]?.id;
+            const groupCats = catsByGroup[currentGroupId] || [];
+
+            return (
+              <tr key={a.id} className="border-t">
+                <td className="py-1">
+                  <input type="checkbox" checked={!!a.active} onChange={(e) => onChange(idx, { active: e.target.checked })} />
+                </td>
+                <td className="py-1">
+                  <input type="text" className="px-2 py-1 rounded-lg border w-40" value={a.name}
+                    onChange={(e)=>onChange(idx, { name: e.target.value })} />
+                </td>
+                <td className="py-1">
+                  <input type="number" className="px-2 py-1 rounded-lg border w-32" value={a.amount}
+                    onChange={(e)=>onChange(idx, { amount: Number(e.target.value) || 0 })} />
+                </td>
+                <td className="py-1">
+                  <input type="number" min={1} max={31} className="px-2 py-1 rounded-lg border w-20" value={a.day}
+                    onChange={(e)=>onChange(idx, { day: Number(e.target.value) || 1 })} />
+                </td>
+                <td className="py-1">
+                  <select
+                    className="px-2 py-1 rounded-lg border w-44"
+                    value={currentGroupId}
+                    onChange={(e) => {
+                      const newGroupId = e.target.value;
+                      const firstCat = (catsByGroup[newGroupId] || [])[0];
+                      if (firstCat) onChange(idx, { catId: firstCat.id });
+                    }}
+                  >
+                    {groups.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
+                  </select>
+                </td>
+                <td className="py-1">
+                  <select
+                    className="px-2 py-1 rounded-lg border w-44"
+                    value={a.catId}
+                    onChange={(e)=>onChange(idx, { catId: e.target.value })}
+                  >
+                    {groupCats.length === 0 ? (
+                      <option value="">(통장 없음)</option>
+                    ) : (
+                      groupCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))
+                    )}
+                  </select>
+                </td>
+                <td className="py-1">
+                  <button onClick={()=>onDelete(idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
