@@ -75,6 +75,9 @@ export default function AugustBudget() {
   const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
   const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
   const [houseInput, setHouseInput] = useState(houseId);
+
+  // 뷰 탭: 가계부 | 달력
+  const [mainTab, setMainTab] = useState("budget");
   const [selectedDate, setSelectedDate] = useState(todayStr());
 
   // 스냅샷 상태
@@ -166,39 +169,6 @@ export default function AugustBudget() {
     load();
   }, [fb.db, fb.user, houseId]);
 
-  // 스냅샷 저장/복원
-  const saveSnapshot = async () => {
-    if (!fb.db || !fb.user || !houseId) return alert("먼저 로그인/연결을 해주세요.");
-    setIsSavingSnap(true);
-    try {
-      const col = collection(fb.db, "budgets", houseId, "months", monthKey, "snapshots");
-      await addDoc(col, { model, createdAt: new Date().toISOString() });
-      const qs = await getDocs(query(col, orderBy("createdAt", "desc"), limit(10)));
-      setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
-      alert("스냅샷 저장 완료!");
-    } catch (e) {
-      alert("스냅샷 저장 중 오류가 발생했습니다.");
-      console.warn(e);
-    } finally {
-      setIsSavingSnap(false);
-    }
-  };
-
-  const restoreFromSnapshot = async () => {
-    if (!restoreId) return alert("복원할 스냅샷을 선택하세요.");
-    const snap = snapshots.find((s) => s.id === restoreId);
-    if (!snap) return alert("스냅샷을 찾지 못했습니다.");
-    setIsRestoring(true);
-    try {
-      setModel(snap.model);
-      alert("스냅샷 복원 완료!");
-    } catch (e) {
-      alert("복원 중 오류가 발생했습니다.");
-    } finally {
-      setIsRestoring(false);
-    }
-  };
-
   // ========= 파생값 =========
   const totalAllocated = useMemo(
     () => model.categories.reduce((sum, c) => sum + (Number(c.amount) || 0), 0),
@@ -226,6 +196,23 @@ export default function AugustBudget() {
     });
     return map;
   }, [model.entries]);
+
+  // 이 달 총합
+  const monthTotals = useMemo(() => {
+    let income = 0, expense = 0;
+    Object.values(calendarData).forEach((v) => { income += v.income || 0; expense += v.expense || 0; });
+    return { income, expense, net: income - expense };
+  }, [calendarData]);
+
+  // 선택된 날짜의 상세 목록
+  const entriesOnSelectedDate = useMemo(() => {
+    const list = [];
+    Object.entries(model.entries || {}).forEach(([catId, arr]) => {
+      const catName = model.categories.find((c) => c.id === catId)?.name || catId;
+      (arr || []).forEach((e, idx) => { if (e.date === selectedDate) list.push({ ...e, catId, idx, catName }); });
+    });
+    return list.sort((a, b) => (a.type === b.type ? 0 : a.type === "income" ? -1 : 1));
+  }, [model.entries, model.categories, selectedDate]);
 
   // ========= 액션 =========
   const updateSalary = (v) => setModel((m) => ({ ...m, salary: Number(v) || 0 }));
@@ -285,173 +272,213 @@ export default function AugustBudget() {
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between">
-          <h1 className="text-xl sm:text-2xl font-bold">8월 가계부 · 월급 분배 & 자동이체 트래커</h1>
-          <div className="flex flex-wrap items-center gap-2">
-            {fb.cfgFromEnv ? (
-              <span className="px-3 py-1.5 rounded-xl text-xs bg-emerald-100 text-emerald-700">환경변수 연동</span>
-            ) : (
-              <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">연동 설정</button>
-            )}
-            {fb.user ? (
-              <>
-                <span className="text-sm text-slate-600">로그인됨</span>
-                <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
-              </>
-            ) : (
-              <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
-            )}
-            <input value={houseInput} onChange={(e) => setHouseInput(e.target.value)} placeholder="가계부 코드(예: FAMILY2025)" className="px-3 py-1.5 rounded-xl border w-40" />
-            <button onClick={connectHouse} className="px-3 py-1.5 rounded-xl text-sm bg-indigo-600 text-white hover:bg-indigo-700">연결</button>
+        <div className="mx-auto max-w-7xl px-4 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-xl sm:text-2xl font-bold">8월 가계부</h1>
+            <div className="flex flex-wrap items-center gap-2">
+              {fb.cfgFromEnv ? (
+                <span className="px-3 py-1.5 rounded-xl text-xs bg-emerald-100 text-emerald-700">환경변수 연동</span>
+              ) : (
+                <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">연동 설정</button>
+              )}
+              {fb.user ? (
+                <>
+                  <span className="text-sm text-slate-600">로그인됨</span>
+                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                </>
+              ) : (
+                <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
+              )}
+              <input value={houseInput} onChange={(e) => setHouseInput(e.target.value)} placeholder="가계부 코드(예: FAMILY2025)" className="px-3 py-1.5 rounded-xl border w-40" />
+              <button onClick={connectHouse} className="px-3 py-1.5 rounded-xl text-sm bg-indigo-600 text-white hover:bg-indigo-700">연결</button>
 
-            <button onClick={saveSnapshot} disabled={isSavingSnap} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 저장</button>
-            <select value={restoreId} onChange={(e) => setRestoreId(e.target.value)} className="px-3 py-1.5 rounded-xl border">
-              <option value="">스냅샷 선택(최근 10개)</option>
-              {snapshots.map((s) => {
-                const t = new Date(s.createdAt);
-                const label = `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
-                return <option key={s.id} value={s.id}>{label}</option>;
-              })}
-            </select>
-            <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
+              <button onClick={saveSnapshot} disabled={isSavingSnap} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 저장</button>
+              <select value={restoreId} onChange={(e) => setRestoreId(e.target.value)} className="px-3 py-1.5 rounded-xl border">
+                <option value="">스냅샷 선택(최근 10개)</option>
+                {snapshots.map((s) => {
+                  const t = new Date(s.createdAt);
+                  const label = `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+                  return <option key={s.id} value={s.id}>{label}</option>;
+                })}
+              </select>
+              <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
 
-            <label className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 cursor-pointer">
-              복원
-              <input type="file" accept="application/json" className="hidden" onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])} />
-            </label>
-            <button onClick={exportJSON} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">백업</button>
-            <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
+              <label className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 cursor-pointer">
+                복원
+                <input type="file" accept="application/json" className="hidden" onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])} />
+              </label>
+              <button onClick={exportJSON} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">백업</button>
+              <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
+            </div>
           </div>
-        </div>
 
-        {/* ==== 달력 (메인 탭 위) ==== */}
-        <div className="mx-auto max-w-7xl px-4 pb-4">
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="text-base font-semibold mb-2">이 달 수입·지출 달력</h2>
-            <MonthCalendar ym={monthKey} data={calendarData} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+          {/* ==== 상단 메인 탭 (가계부/달력) ==== */}
+          <div className="mt-3 mx-auto max-w-7xl">
+            <div className="flex gap-2">
+              <button onClick={() => setMainTab('budget')} className={`px-4 py-2 rounded-xl text-sm ${mainTab==='budget' ? 'bg-indigo-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>가계부</button>
+              <button onClick={() => setMainTab('calendar')} className={`px-4 py-2 rounded-xl text-sm ${mainTab==='calendar' ? 'bg-indigo-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>달력</button>
+            </div>
           </div>
+
+          {/* ==== 달력(요약) : 가계부 탭에서만 상단 작은 달력 노출 ==== */}
+          {mainTab === 'budget' && (
+            <div className="mx-auto max-w-7xl px-4 pb-4">
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="text-base font-semibold mb-2">이 달 수입·지출 달력</h2>
+                <MonthCalendar ym={monthKey} data={calendarData} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
-        <section className="grid lg:grid-cols-2 gap-6">
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-4">1) 월급 입력</h2>
-            <div className="flex items-center gap-3">
-              <span className="text-slate-600">월급</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                className="w-full sm:w-64 px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder="예: 3,000,000"
-                value={model.salary}
-                onChange={(e) => updateSalary(e.target.value)}
-              />
-              <span className="text-sm text-slate-500">{KRW(model.salary)}</span>
-            </div>
+      {/* ===== 메인 컨텐츠 ===== */}
+      {mainTab === 'budget' ? (
+        <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
+          <section className="grid lg:grid-cols-2 gap-6">
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
+              <h2 className="text-lg font-semibold mb-4">1) 월급 입력</h2>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-600">월급</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  className="w-full sm:w-64 px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="예: 3,000,000"
+                  value={model.salary}
+                  onChange={(e) => updateSalary(e.target.value)}
+                />
+                <span className="text-sm text-slate-500">{KRW(model.salary)}</span>
+              </div>
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-2">통장 이름</th>
+                      <th className="py-2">배정금액</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {model.categories.map((c, idx) => (
+                      <tr key={c.id} className="border-t">
+                        <td className="py-2 flex items-center gap-2">
+                          <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
+                          <input type="text" className="px-2 py-1 rounded-lg border w-32" value={c.name} onChange={(e) => updateCategory(c.id, "name", e.target.value)} />
+                        </td>
+                        <td className="py-2">
+                          <input type="number" className="w-32 px-2 py-1 rounded-lg border" value={c.amount} onChange={(e) => updateCategory(c.id, "amount", e.target.value)} />
+                          <span className="ml-2 text-slate-500">{KRW(c.amount)}</span>
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t">
+                      <td className="py-2 flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />남는 돈</td>
+                      <td className="py-2">{KRW(remainAmount)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
+              <h2 className="text-lg font-semibold mb-4">2) 월급 통장 원형그래프</h2>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={overallPie} dataKey="value" nameKey="name" outerRadius={100} label>
+                      {overallPie.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(val) => KRW(Number(val))} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <p className="mt-2 text-sm text-slate-500">월급에서 직접 입력한 배정금액과 남는 금액을 표시합니다.</p>
+            </motion.div>
+          </section>
+
+          {/* === 3) 기록 입력(전역) === */}
+          <section className="bg-white rounded-2xl shadow p-5">
+            <h2 className="text-lg font-semibold mb-3">3) 지출·수입 기록 추가</h2>
+            <GlobalEntryForm categories={model.categories} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
+
             <div className="mt-4 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-slate-500">
-                    <th className="py-2">통장 이름</th>
-                    <th className="py-2">배정금액</th>
+                    <th className="py-1">날짜</th>
+                    <th className="py-1">통장</th>
+                    <th className="py-1">유형</th>
+                    <th className="py-1">금액</th>
+                    <th className="py-1">메모</th>
+                    <th className="py-1">삭제</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {model.categories.map((c, idx) => (
-                    <tr key={c.id} className="border-t">
-                      <td className="py-2 flex items-center gap-2">
-                        <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
-                        <input
-                          type="text"
-                          className="px-2 py-1 rounded-lg border w-32"
-                          value={c.name}
-                          onChange={(e) => updateCategory(c.id, "name", e.target.value)}
-                        />
-                      </td>
-                      <td className="py-2">
-                        <input
-                          type="number"
-                          className="w-32 px-2 py-1 rounded-lg border"
-                          value={c.amount}
-                          onChange={(e) => updateCategory(c.id, "amount", e.target.value)}
-                        />
-                        <span className="ml-2 text-slate-500">{KRW(c.amount)}</span>
-                      </td>
+                  {recentEntries.map((e) => (
+                    <tr key={`${e.catId}-${e.idx}`} className="border-t">
+                      <td className="py-1">{e.date}</td>
+                      <td className="py-1">{e.catName}</td>
+                      <td className="py-1">{(e.type || 'expense') === 'income' ? '수입' : '지출'}</td>
+                      <td className="py-1">{KRW(e.amount)}</td>
+                      <td className="py-1">{e.memo}</td>
+                      <td className="py-1"><button onClick={() => removeEntry(e.catId, e.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button></td>
                     </tr>
                   ))}
-                  <tr className="border-t">
-                    <td className="py-2 flex items-center gap-2">
-                      <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />남는 돈
-                    </td>
-                    <td className="py-2">{KRW(remainAmount)}</td>
-                  </tr>
+                  {recentEntries.length === 0 && (<tr><td colSpan={6} className="py-2 text-center text-slate-400">아직 기록이 없습니다.</td></tr>)}
                 </tbody>
               </table>
             </div>
-          </motion.div>
-
-          <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-4">2) 월급 통장 원형그래프</h2>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={overallPie} dataKey="value" nameKey="name" outerRadius={100} label>
-                    {overallPie.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(val) => KRW(Number(val))} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
+          </section>
+        </main>
+      ) : (
+        // ===== 달력 탭 =====
+        <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
+          <section className="bg-white rounded-2xl shadow p-5">
+            <h2 className="text-lg font-semibold mb-2">달력 · 이 달 수입/지출 한눈에</h2>
+            <MonthCalendar ym={monthKey} data={calendarData} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+            <div className="mt-4 grid sm:grid-cols-3 gap-3 text-sm">
+              <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 수입</div><div className="text-xl font-bold text-emerald-700">{KRW(monthTotals.income)}</div></div>
+              <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 지출</div><div className="text-xl font-bold text-rose-700">{KRW(monthTotals.expense)}</div></div>
+              <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">순이동(수입-지출)</div><div className="text-xl font-bold">{KRW(monthTotals.net)}</div></div>
             </div>
-            <p className="mt-2 text-sm text-slate-500">월급에서 직접 입력한 배정금액과 남는 금액을 표시합니다.</p>
-          </motion.div>
-        </section>
+          </section>
 
-        {/* === 3) 기록 입력(전역) === */}
-        <section className="bg-white rounded-2xl shadow p-5">
-          <h2 className="text-lg font-semibold mb-3">3) 지출·수입 기록 추가</h2>
-          <GlobalEntryForm
-            categories={model.categories}
-            selectedDate={selectedDate}
-            onAdd={(catId, entry) => addEntry(catId, entry)}
-          />
-
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="py-1">날짜</th>
-                  <th className="py-1">통장</th>
-                  <th className="py-1">유형</th>
-                  <th className="py-1">금액</th>
-                  <th className="py-1">메모</th>
-                  <th className="py-1">삭제</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentEntries.map((e, i) => (
-                  <tr key={`${e.catId}-${e.idx}`} className="border-t">
-                    <td className="py-1">{e.date}</td>
-                    <td className="py-1">{e.catName}</td>
-                    <td className="py-1">{(e.type || 'expense') === 'income' ? '수입' : '지출'}</td>
-                    <td className="py-1">{KRW(e.amount)}</td>
-                    <td className="py-1">{e.memo}</td>
-                    <td className="py-1">
-                      <button onClick={() => removeEntry(e.catId, e.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
-                    </td>
+          <section className="bg-white rounded-2xl shadow p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-semibold">{selectedDate} 상세</h3>
+              <GlobalEntryForm categories={model.categories} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="py-1">통장</th>
+                    <th className="py-1">유형</th>
+                    <th className="py-1">금액</th>
+                    <th className="py-1">메모</th>
+                    <th className="py-1">삭제</th>
                   </tr>
-                ))}
-                {recentEntries.length === 0 && (
-                  <tr><td colSpan={6} className="py-2 text-center text-slate-400">아직 기록이 없습니다.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </main>
+                </thead>
+                <tbody>
+                  {entriesOnSelectedDate.map((e) => (
+                    <tr key={`${e.catId}-${e.idx}`} className="border-t">
+                      <td className="py-1">{e.catName}</td>
+                      <td className="py-1">{(e.type || 'expense') === 'income' ? '수입' : '지출'}</td>
+                      <td className="py-1">{KRW(e.amount)}</td>
+                      <td className="py-1">{e.memo}</td>
+                      <td className="py-1"><button onClick={() => removeEntry(e.catId, e.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button></td>
+                    </tr>
+                  ))}
+                  {entriesOnSelectedDate.length === 0 && (<tr><td colSpan={5} className="py-2 text-center text-slate-400">이 날짜의 기록이 없습니다.</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </main>
+      )}
     </div>
   );
 }
@@ -501,7 +528,7 @@ function MonthCalendar({ ym, data, selectedDate, onSelectDate }) {
           );
         })}
       </div>
-      <div className="mt-2 text-xs text-slate-500">※ 달력의 날짜를 누르면 아래 기록 입력폼의 날짜에 자동 적용됩니다.</div>
+      <div className="mt-2 text-xs text-slate-500">※ 달력의 날짜를 누르면 아래 입력폼/상세에도 반영됩니다.</div>
     </div>
   );
 }
