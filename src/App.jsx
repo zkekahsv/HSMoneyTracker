@@ -15,8 +15,10 @@
 // 2) 각 그룹(특히 type === "salary") 화면에서 "배정금액"을 입력하면,
 //    매월 26일에 그 배정 금액만큼 자동으로 메인 -> 서브 분배가 기록됩니다.
 // 3) 분배/월급 자동기록은 메모 키워드로 구분(SALARY:, ALLOC:)하여 같은 달에 중복 반영되지 않도록 처리.
-// 4) 요청사항 반영: "통장별 상세" 카드 각각 접기/펼치기 토글 추가.
-// 5) 요청사항 반영: 서브 통장에 "은행 이름" 필드 추가(표시/수정 가능).
+// 4) 통장별 상세 카드에 접기/펼치기 토글 추가.
+// 5) 서브 통장에 '은행 이름' 필드 추가.
+// 6) 서브 통장 관리 테이블에 페이지네이션(1,2,3…) 추가.
+// 7) 원형그래프/표 비율을 정규화(0.1% 단위)해서 합계 100.0% 보장.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
@@ -72,13 +74,36 @@ const clampDay = (ym, day) => {
   return String(d).padStart(2, "0");
 };
 
+// ---- 퍼센트 정규화(합계 100.0% 보장, 0.1% 단위) ----
+function normalizePercents(values) {
+  const safeVals = values.map((v) => Math.max(0, Number(v) || 0));
+  const total = safeVals.reduce((s, v) => s + v, 0);
+  if (total <= 0) return values.map(() => 0);
+  const raw = safeVals.map((v) => (v / total) * 100);
+  const base = raw.map((p) => Math.floor(p * 10) / 10); // 0.1% 단위 내림
+  let delta = Math.round((100 - base.reduce((s, p) => s + p, 0)) * 10) / 10;
+
+  // 소수 첫째자리 아래 잔여 비중이 큰 것부터 0.1%씩 배분
+  const fracs = raw.map((p, i) => ({ i, frac: Math.round((p * 10 - Math.floor(p * 10)) * 1000) }));
+  fracs.sort((a, b) => b.frac - a.frac);
+
+  let idx = 0;
+  while (delta > 0 && idx < fracs.length) {
+    base[fracs[idx].i] = Math.round((base[fracs[idx].i] + 0.1) * 10) / 10;
+    delta = Math.round((100 - base.reduce((s, p) => s + p, 0)) * 10) / 10;
+    idx++;
+  }
+  return base;
+}
+const fmtPct = (p) => `${(Number(p) || 0).toFixed(1)}%`;
+
 // ==== 로컬 백업/복원 유틸 ====
 function collectBudgetLocalStorage() {
   const items = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
+    if (key.startsWith("budget-") && /^\\d{4}-\\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
     if (key === "budget-fbconfig" || key === "budget-houseId") {
@@ -110,7 +135,7 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   for (const { key, value } of obj.items) {
     const exists = localStorage.getItem(key) !== null;
     if (exists && askBeforeOverwrite) {
-      const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
+      const ok = confirm(`기존 데이터가 있습니다.\\n[${key}]을(를) 덮어쓸까요?`);
       if (!ok) continue;
     }
     try {
@@ -162,7 +187,6 @@ function initialMonthlyModel(ym) {
 function ensureMainCats(model) {
   const groups = model.groups || [];
   const cats = (model.categories || []).map(c => ({
-    // bankName 없던 기존 데이터 대비 안전 가드
     bankName: "",
     ...c,
     bankName: typeof c.bankName === "string" ? c.bankName : ""
@@ -212,9 +236,7 @@ function applyAutomations(model, ym) {
     const arr = m.entries[cat.id] || [];
     m.entries[cat.id] = arr.filter((e) => {
       if (!e?.memo) return true;
-      // SALARY
       if (m.groups.some((g) => isSalaryMemo(e.memo, g.id, ym))) return false;
-      // ALLOC
       const parts = e.memo.split(":");
       if (parts[0] === "ALLOC" && e.date?.startsWith(ym + "-")) return false;
       return true;
@@ -233,7 +255,7 @@ function applyAutomations(model, ym) {
       m.entries[mainCat] = [...(m.entries[mainCat] || []), entry];
     });
 
-  // 3) 26일 자동분배: 각 그룹별로 서브 카테고리 amount 기준
+  // 3) 26일 자동분배
   m.groups.forEach((g) => {
     const mainCat = MAIN_CAT_ID(g.id);
     const date = `${ym}-${clampDay(ym, 26)}`;
@@ -242,12 +264,8 @@ function applyAutomations(model, ym) {
       const allocAmt = Number(c.amount) || 0;
       if (allocAmt <= 0) return;
       const memo = MEMO_ALLOC(g.id, c.id, ym);
-
-      // 메인에서 출금(-)
       const out = { date, amount: allocAmt, memo, type: "expense" };
       m.entries[mainCat] = [...(m.entries[mainCat] || []), out];
-
-      // 서브에 입금(+)
       const into = { date, amount: allocAmt, memo, type: "income" };
       m.entries[c.id] = [...(m.entries[c.id] || []), into];
     });
@@ -302,7 +320,7 @@ export default function App() {
       const obj = JSON.parse(text);
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
         setModel((prev) => {
           try {
             const raw = localStorage.getItem(`budget-${ym}`);
@@ -434,7 +452,6 @@ export default function App() {
     const name = prompt("그룹 이름 변경", g?.name || "");
     if (!name) return;
     updateGroup(id, { name });
-    // 메인 카테고리 이름도 반영
     setModel((m) => ({
       ...m,
       categories: (m.categories || []).map((c) => c.id === MAIN_CAT_ID(id) ? { ...c, name: `${name} (메인)` } : c),
@@ -462,11 +479,21 @@ export default function App() {
     setMainTab("calendar");
   };
 
+  // ======= 서브 통장 추가/수정/삭제 =======
+  const ROWS_PER_PAGE = 6;
+  const [allocPageByGroup, setAllocPageByGroup] = useState({});
+  const getAllocPage = (gid) => allocPageByGroup[gid] || 1;
+  const setAllocPage = (gid, page) => setAllocPageByGroup((p) => ({ ...p, [gid]: page }));
+
   const addCategoryRow = (groupId) => {
     const name = prompt("새 통장 이름", "새 통장"); if (!name) return;
     const bankName = prompt("은행 이름(선택)", "") || "";
     const id = `cat_${Date.now().toString(36)}`;
     setModel((m) => ({ ...m, categories: [...m.categories, { id, name, amount: 0, groupId, isMain: false, bankName }] }));
+    // 추가 직후 페이지를 마지막으로 이동
+    const count = categories.filter((c) => c.groupId === groupId && !c.isMain).length + 1;
+    const last = Math.max(1, Math.ceil(count / ROWS_PER_PAGE));
+    setAllocPage(groupId, last);
   };
   const updateCategory = (id, field, value) =>
     setModel((m) => ({
@@ -502,9 +529,14 @@ export default function App() {
   // ==== 파생값 ====
   const activeGroup = groups.find((g) => g.id === mainTab);
   const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
-  const catsForAlloc = catsOfActive.filter((c) => !c.isMain); // 배정/파이에는 메인 제외
+  const catsForAlloc = catsOfActive.filter((c) => !c.isMain);
+
   const sumAllocated = useMemo(() => catsForAlloc.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsForAlloc]);
   const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
+
+  // ---- 퍼센트(정규화) 공용 계산 ----
+  const allValsForPercent = useMemo(() => [...catsForAlloc.map((c) => c.amount || 0), remainPool], [catsForAlloc, remainPool]);
+  const allPercents = useMemo(() => normalizePercents(allValsForPercent), [allValsForPercent]);
 
   // 달력 합계
   const calendarData = useMemo(() => {
@@ -527,10 +559,18 @@ export default function App() {
 
   const overallPie = useMemo(() => {
     if (!activeGroup) return [];
-    const data = catsForAlloc.map((c) => ({ name: c.name, value: c.amount }));
-    data.push({ name: "남는 돈", value: remainPool });
+    const data = catsForAlloc.map((c) => ({ name: c.name, value: Math.max(0, c.amount || 0) }));
+    data.push({ name: "남는 돈", value: Math.max(0, remainPool) });
     return data;
   }, [catsForAlloc, remainPool, activeGroup]);
+
+  // 퍼센트 값을 Pie 데이터에 주입(라벨/툴팁 일관성)
+  const pieWithPct = useMemo(() => overallPie.map((d, i) => ({ ...d, pct: allPercents[i] || 0 })), [overallPie, allPercents]);
+  const renderPieLabel = ({ index, payload }) => {
+    const pct = pieWithPct[index]?.pct ?? 0;
+    const name = payload?.name ?? "";
+    return `${name} ${fmtPct(pct)}`;
+  };
 
   // 최근 기록 20개
   const recentEntries = useMemo(() => {
@@ -542,10 +582,23 @@ export default function App() {
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
   }, [model.entries, categories]);
 
-  // ====== 통장 상세 접기/펼치기 상태 ======
+  // ====== 통장 상세 접기/펼치기 ======
   const [openMap, setOpenMap] = useState({});
-  const isOpen = (id) => openMap[id] !== false; // 기본은 펼침(true)
+  const isOpen = (id) => openMap[id] !== false;
   const toggleOpen = (id) => setOpenMap((m) => ({ ...m, [id]: !isOpen(id) }));
+
+  // ====== 서브 통장 테이블 페이지네이션 ======
+  const totalPages = Math.max(1, Math.ceil(catsForAlloc.length / ROWS_PER_PAGE));
+  const currentPage = activeGroup ? Math.min(getAllocPage(activeGroup.id), totalPages) : 1;
+  const startIdx = (currentPage - 1) * ROWS_PER_PAGE;
+  const endIdx = startIdx + ROWS_PER_PAGE;
+  const catsPage = catsForAlloc.slice(startIdx, endIdx);
+
+  // 그룹/목록 변동 시 현재 페이지가 범위를 벗어나면 보정
+  useEffect(() => {
+    if (!activeGroup) return;
+    if (getAllocPage(activeGroup.id) > totalPages) setAllocPage(activeGroup.id, totalPages);
+  }, [activeGroup?.id, catsForAlloc.length, totalPages]);
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
@@ -698,12 +751,13 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {catsForAlloc.map((c, idx) => {
-                      const percent = Number(activeGroup?.pool || 0) > 0 ? Math.round(((c.amount || 0) / Number(activeGroup.pool || 0)) * 100) : 0;
+                    {catsPage.map((c, idx) => {
+                      const globalIdx = startIdx + idx; // 전체 기준 인덱스
+                      const percent = allPercents[globalIdx] || 0;
                       return (
                         <tr key={c.id} className="border-t">
                           <td className="py-2 flex items-center gap-2">
-                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
+                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[globalIdx % COLORS.length] }} />
                             <input type="text" className="px-2 py-1 rounded-lg border w-32" value={c.name} onChange={(e) => updateCategory(c.id, "name", e.target.value)} />
                           </td>
                           <td className="py-2">
@@ -713,7 +767,7 @@ export default function App() {
                             <input type="number" className="w-40 px-2 py-1 rounded-lg border" value={c.amount ?? 0} onChange={(e) => updateCategory(c.id, "amount", e.target.value)} />
                             <span className="ml-2 text-slate-500">{KRW(c.amount ?? 0)}</span>
                           </td>
-                          <td className="py-2">{percent}%</td>
+                          <td className="py-2">{fmtPct(percent)}</td>
                           <td className="py-2">
                             <button onClick={() => deleteCategoryRow(c.id)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
                           </td>
@@ -727,13 +781,43 @@ export default function App() {
                       </td>
                       <td className="py-2 text-slate-400">—</td>
                       <td className="py-2">{KRW(remainPool)}</td>
-                      <td className="py-2 text-slate-500">
-                        {Number(activeGroup?.pool || 0) > 0 ? Math.round((remainPool / Number(activeGroup.pool || 0)) * 100) : 0}%
-                      </td>
+                      <td className="py-2 text-slate-500">{fmtPct(allPercents[allPercents.length - 1] || 0)}</td>
                       <td />
                     </tr>
                   </tbody>
                 </table>
+
+                {/* 페이지네이션 */}
+                {totalPages > 1 && (
+                  <div className="mt-3 flex items-center gap-1">
+                    <button
+                      className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-50"
+                      disabled={currentPage <= 1}
+                      onClick={() => setAllocPage(activeGroup.id, Math.max(1, currentPage - 1))}
+                    >
+                      이전
+                    </button>
+                    {Array.from({ length: totalPages }).map((_, i) => {
+                      const p = i + 1;
+                      return (
+                        <button
+                          key={p}
+                          className={`px-3 py-1 rounded-lg border ${p === currentPage ? "bg-indigo-600 text-white border-indigo-600" : "bg-white hover:bg-slate-50"}`}
+                          onClick={() => setAllocPage(activeGroup.id, p)}
+                        >
+                          {p}
+                        </button>
+                      );
+                    })}
+                    <button
+                      className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-50"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setAllocPage(activeGroup.id, Math.min(totalPages, currentPage + 1))}
+                    >
+                      다음
+                    </button>
+                  </div>
+                )}
               </div>
             </motion.div>
 
@@ -742,10 +826,22 @@ export default function App() {
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie data={overallPie} dataKey="value" nameKey="name" outerRadius={100} label>
-                      {overallPie.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
+                    <Pie
+                      data={pieWithPct}
+                      dataKey="value"
+                      nameKey="name"
+                      outerRadius={100}
+                      label={renderPieLabel}
+                    >
+                      {pieWithPct.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
                     </Pie>
-                    <Tooltip formatter={(val) => KRW(Number(val))} />
+                    <Tooltip
+                      formatter={(val, name, props) => {
+                        const idx = props?.index ?? 0;
+                        const pct = pieWithPct[idx]?.pct ?? 0;
+                        return [KRW(Number(val)), `${name} (${fmtPct(pct)})`];
+                      }}
+                    />
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
@@ -781,7 +877,7 @@ export default function App() {
                       <div className="flex items-center gap-3 text-sm text-slate-600">
                         <span>배정 <b>{KRW(c.amount || 0)}</b></span>
                         <span>남음 <b>{KRW(remain)}</b></span>
-                        <span className={`inline-block w-6 text-center rounded ${opened ? "bg-slate-100" : "bg-slate-100"}`}>{opened ? "▾" : "▸"}</span>
+                        <span className={`inline-block w-6 text-center rounded bg-slate-100`}>{opened ? "▾" : "▸"}</span>
                       </div>
                     </button>
 
