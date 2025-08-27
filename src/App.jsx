@@ -15,6 +15,8 @@
 // 2) 각 그룹(특히 type === "salary") 화면에서 "배정금액"을 입력하면,
 //    매월 26일에 그 배정 금액만큼 자동으로 메인 -> 서브 분배가 기록됩니다.
 // 3) 분배/월급 자동기록은 메모 키워드로 구분(SALARY:, ALLOC:)하여 같은 달에 중복 반영되지 않도록 처리.
+// 4) 요청사항 반영: "통장별 상세" 카드 각각 접기/펼치기 토글 추가.
+// 5) 요청사항 반영: 서브 통장에 "은행 이름" 필드 추가(표시/수정 가능).
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
@@ -76,7 +78,7 @@ function collectBudgetLocalStorage() {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    if (key.startsWith("budget-") && /^\\d{4}-\\d{2}$/.test(key.slice(7))) {
+    if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
     if (key === "budget-fbconfig" || key === "budget-houseId") {
@@ -108,7 +110,7 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   for (const { key, value } of obj.items) {
     const exists = localStorage.getItem(key) !== null;
     if (exists && askBeforeOverwrite) {
-      const ok = confirm(`기존 데이터가 있습니다.\\n[${key}]을(를) 덮어쓸까요?`);
+      const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
       if (!ok) continue;
     }
     try {
@@ -128,13 +130,13 @@ const DEFAULT_GROUPS = [
   { id: "savings", name: "저축통장", type: "generic", pool: 0 },
 ];
 const DEFAULT_CATEGORIES = [
-  { id: "living",    name: "생활비 통장", amount: 0, groupId: "salary" },
-  { id: "academy",   name: "학원비 통장", amount: 0, groupId: "salary" },
-  { id: "food",      name: "밥값 통장",   amount: 0, groupId: "salary" },
-  { id: "phone",     name: "통신비 통장", amount: 0, groupId: "salary" },
-  { id: "allowance", name: "용돈 통장",   amount: 0, groupId: "salary" },
-  { id: "siu",       name: "시우 통장",   amount: 0, groupId: "savings" },
-  { id: "seonwoo",   name: "선우 통장",   amount: 0, groupId: "savings" },
+  { id: "living",    name: "생활비 통장", amount: 0, groupId: "salary", bankName: "" },
+  { id: "academy",   name: "학원비 통장", amount: 0, groupId: "salary", bankName: "" },
+  { id: "food",      name: "밥값 통장",   amount: 0, groupId: "salary", bankName: "" },
+  { id: "phone",     name: "통신비 통장", amount: 0, groupId: "salary", bankName: "" },
+  { id: "allowance", name: "용돈 통장",   amount: 0, groupId: "salary", bankName: "" },
+  { id: "siu",       name: "시우 통장",   amount: 0, groupId: "savings", bankName: "" },
+  { id: "seonwoo",   name: "선우 통장",   amount: 0, groupId: "savings", bankName: "" },
 ];
 const MAIN_CAT_ID = (groupId) => `main_${groupId}`;
 
@@ -151,7 +153,7 @@ function initialMonthlyModel(ym) {
     groups: DEFAULT_GROUPS.map((g) => ({ ...g })),
     categories: [
       // 각 그룹의 메인 통장(숨김/특수)
-      ...DEFAULT_GROUPS.map((g) => ({ id: MAIN_CAT_ID(g.id), name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true })),
+      ...DEFAULT_GROUPS.map((g) => ({ id: MAIN_CAT_ID(g.id), name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true, bankName: "" })),
       ...DEFAULT_CATEGORIES.map((c) => ({ ...c, isMain: false })),
     ],
     entries: {},
@@ -159,14 +161,19 @@ function initialMonthlyModel(ym) {
 }
 function ensureMainCats(model) {
   const groups = model.groups || [];
-  const cats = model.categories || [];
+  const cats = (model.categories || []).map(c => ({
+    // bankName 없던 기존 데이터 대비 안전 가드
+    bankName: "",
+    ...c,
+    bankName: typeof c.bankName === "string" ? c.bankName : ""
+  }));
   const ids = new Set(cats.map((c) => c.id));
   const add = [];
   groups.forEach((g) => {
     const id = MAIN_CAT_ID(g.id);
-    if (!ids.has(id)) add.push({ id, name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true });
+    if (!ids.has(id)) add.push({ id, name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true, bankName: "" });
   });
-  return add.length ? { ...model, categories: [...cats, ...add] } : model;
+  return add.length ? { ...model, categories: [...cats, ...add] } : { ...model, categories: cats };
 }
 function useMonthlyModel(ym) {
   const STORAGE_KEY = `budget-${ym}`;
@@ -295,7 +302,7 @@ export default function App() {
       const obj = JSON.parse(text);
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
         setModel((prev) => {
           try {
             const raw = localStorage.getItem(`budget-${ym}`);
@@ -406,7 +413,7 @@ export default function App() {
 
   // ==== 그룹/카테고리/기록 ====
   const groups = model.groups || [];
-  const categories = useMemo(() => (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary" })), [model.categories]);
+  const categories = useMemo(() => (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary", bankName: typeof c.bankName === "string" ? c.bankName : "" })), [model.categories]);
 
   useEffect(() => {
     const ids = new Set(groups.map((g) => g.id));
@@ -457,11 +464,17 @@ export default function App() {
 
   const addCategoryRow = (groupId) => {
     const name = prompt("새 통장 이름", "새 통장"); if (!name) return;
+    const bankName = prompt("은행 이름(선택)", "") || "";
     const id = `cat_${Date.now().toString(36)}`;
-    setModel((m) => ({ ...m, categories: [...m.categories, { id, name, amount: 0, groupId, isMain: false }] }));
+    setModel((m) => ({ ...m, categories: [...m.categories, { id, name, amount: 0, groupId, isMain: false, bankName }] }));
   };
   const updateCategory = (id, field, value) =>
-    setModel((m) => ({ ...m, categories: m.categories.map((c) => (c.id === id ? { ...c, [field]: field === "amount" ? Number(value) || 0 : value } : c)) }));
+    setModel((m) => ({
+      ...m,
+      categories: m.categories.map((c) =>
+        (c.id === id ? { ...c, [field]: field === "amount" ? Number(value) || 0 : value } : c)
+      )
+    }));
   const deleteCategoryRow = (id) => {
     const cat = categories.find((c) => c.id === id);
     if (cat?.isMain) return alert("메인 통장은 삭제할 수 없습니다.");
@@ -528,6 +541,11 @@ export default function App() {
     });
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
   }, [model.entries, categories]);
+
+  // ====== 통장 상세 접기/펼치기 상태 ======
+  const [openMap, setOpenMap] = useState({});
+  const isOpen = (id) => openMap[id] !== false; // 기본은 펼침(true)
+  const toggleOpen = (id) => setOpenMap((m) => ({ ...m, [id]: !isOpen(id) }));
 
   return (
     <div className="min-h-screen w-full bg-slate-50 text-slate-800">
@@ -649,7 +667,7 @@ export default function App() {
               <h2 className="text-lg font-semibold mb-2">
                 1) {activeGroup?.type === "salary" ? "월급 입력(25일 자동입금)" : "그룹 총액(목표/잔액)"}
               </h2>
-              <div className="mb-2 text-xs text-slate-500">
+              <div className="mb-2 text-xs text-slate-500 whitespace-pre-line">
                 {activeGroup?.type === "salary"
                   ? "· 25일: 위 금액이 메인통장(+)\n· 26일: 아래 서브 통장 '배정금액'만큼 메인(-) → 서브(+) 자동분배"
                   : "· '월급 그룹'으로 지정하면 25/26 자동반영 규칙이 적용됩니다."}
@@ -673,6 +691,7 @@ export default function App() {
                   <thead>
                     <tr className="text-left text-slate-500">
                       <th className="py-2">통장 이름</th>
+                      <th className="py-2">은행 이름</th>
                       <th className="py-2">배정금액(원, 26일 자동분배)</th>
                       <th className="py-2">비율(%)</th>
                       <th className="py-2">삭제</th>
@@ -686,6 +705,9 @@ export default function App() {
                           <td className="py-2 flex items-center gap-2">
                             <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
                             <input type="text" className="px-2 py-1 rounded-lg border w-32" value={c.name} onChange={(e) => updateCategory(c.id, "name", e.target.value)} />
+                          </td>
+                          <td className="py-2">
+                            <input type="text" className="px-2 py-1 rounded-lg border w-28" placeholder="예: 국민" value={c.bankName || ""} onChange={(e) => updateCategory(c.id, "bankName", e.target.value)} />
                           </td>
                           <td className="py-2">
                             <input type="number" className="w-40 px-2 py-1 rounded-lg border" value={c.amount ?? 0} onChange={(e) => updateCategory(c.id, "amount", e.target.value)} />
@@ -703,6 +725,7 @@ export default function App() {
                         <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />
                         남는 돈
                       </td>
+                      <td className="py-2 text-slate-400">—</td>
                       <td className="py-2">{KRW(remainPool)}</td>
                       <td className="py-2 text-slate-500">
                         {Number(activeGroup?.pool || 0) > 0 ? Math.round((remainPool / Number(activeGroup.pool || 0)) * 100) : 0}%
@@ -739,33 +762,52 @@ export default function App() {
                 const used = Math.max(0, expense - income);
                 const remain = Math.max(0, (c.amount || 0) - used);
                 const catPie = [{ name: "사용", value: Math.max(0, used) }, { name: "남음", value: Math.max(0, remain) }];
+                const opened = isOpen(c.id);
                 return (
-                  <motion.div key={c.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.03 }} className="bg-white rounded-2xl shadow p-4 flex flex-col">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
+                  <motion.div key={c.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.03 }} className="bg-white rounded-2xl shadow">
+                    {/* 헤더(토글) */}
+                    <button
+                      onClick={() => toggleOpen(c.id)}
+                      className="w-full flex items-center justify-between p-4 rounded-2xl"
+                      title="클릭하여 접기/펼치기"
+                    >
+                      <div className="flex items-center gap-2 text-left">
                         <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
-                        <h3 className="font-semibold">{c.name}</h3>
+                        <div>
+                          <div className="font-semibold">{c.name}</div>
+                          {c.bankName ? <div className="text-xs text-slate-500">{c.bankName}</div> : null}
+                        </div>
                       </div>
-                      <div className="text-sm text-slate-500">배정: <b>{KRW(c.amount || 0)}</b></div>
-                    </div>
-                    <div className="h-44">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={catPie} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70}>
-                            {catPie.map((_, i) => (<Cell key={`cat-${c.id}-${i}`} fill={i === 0 ? COLORS[idx % COLORS.length] : "#e2e8f0"} />))}
-                          </Pie>
-                          <Tooltip formatter={(val) => KRW(Number(val))} />
-                          <Legend />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
-                      <div className="bg-slate-50 rounded-xl p-2 text-center">지출 <div className="font-semibold">{KRW(expense)}</div></div>
-                      <div className="bg-slate-50 rounded-xl p-2 text-center">수입 <div className="font-semibold">{KRW(income)}</div></div>
-                      <div className="bg-slate-50 rounded-xl p-2 text-center">남음 <div className="font-semibold">{KRW(remain)}</div></div>
-                    </div>
-                    <EntryForm onAdd={(entry) => addEntry(c.id, entry)} />
-                    <CategoryEntriesTable catId={c.id} entries={model.entries?.[c.id] || []} onRemove={(i) => removeEntry(c.id, i)} />
+                      <div className="flex items-center gap-3 text-sm text-slate-600">
+                        <span>배정 <b>{KRW(c.amount || 0)}</b></span>
+                        <span>남음 <b>{KRW(remain)}</b></span>
+                        <span className={`inline-block w-6 text-center rounded ${opened ? "bg-slate-100" : "bg-slate-100"}`}>{opened ? "▾" : "▸"}</span>
+                      </div>
+                    </button>
+
+                    {/* 본문(접힘 처리) */}
+                    {opened && (
+                      <div className="p-4 border-t">
+                        <div className="h-44">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={catPie} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70}>
+                                {catPie.map((_, i) => (<Cell key={`cat-${c.id}-${i}`} fill={i === 0 ? COLORS[idx % COLORS.length] : "#e2e8f0"} />))}
+                              </Pie>
+                              <Tooltip formatter={(val) => KRW(Number(val))} />
+                              <Legend />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                          <div className="bg-slate-50 rounded-xl p-2 text-center">지출 <div className="font-semibold">{KRW(expense)}</div></div>
+                          <div className="bg-slate-50 rounded-xl p-2 text-center">수입 <div className="font-semibold">{KRW(income)}</div></div>
+                          <div className="bg-slate-50 rounded-xl p-2 text-center">남음 <div className="font-semibold">{KRW(remain)}</div></div>
+                        </div>
+                        <EntryForm onAdd={(entry) => addEntry(c.id, entry)} />
+                        <CategoryEntriesTable catId={c.id} entries={model.entries?.[c.id] || []} onRemove={(i) => removeEntry(c.id, i)} />
+                      </div>
+                    )}
                   </motion.div>
                 );
               })}
