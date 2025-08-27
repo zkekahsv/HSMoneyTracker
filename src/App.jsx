@@ -1,192 +1,499 @@
-// src/App.jsx
-// ==== 가계부 (25일 월급 자동입금 + 26일 자동배분, 자동이체 탭 제거) ====
-// - 첫 번째 메인탭: 월급통장만 표시
-// - 25일: 월급통장(메인)에 입금 기록 자동 생성
-// - 26일: 아래 'FIXED_ALLOCATIONS' 목록대로 하위 통장으로 자동 이체(메인 -, 하위 +)
-// - 각 통장에 '은행명' 필드 추가/수정 가능
-// - 로컬스토리지에 월별 저장
+// App.jsx
+// ==== React 기반 가계부 (25일 월급 자동입금 + 26일 자동분배 / 자동이체 탭 제거 버전) ====
+// - 25일: 월급 그룹의 메인통장(main_<groupId>)에 SALARY 메모로 입금(+)
+// - 26일: 같은 그룹 내 서브 통장들의 "배정 금액"을 기준으로
+//         메인통장에서 출금(-) & 각 서브 통장에 입금(+) 자동 반영
+// - "자동이체" 탭을 완전히 제거, 월급통장 화면만으로 관리
+//
+// === 사용법 ===
+// npm i firebase framer-motion recharts
+// (Tailwind는 프로젝트 설정에 맞게 적용)
+// npm run dev
+//
+// === 설계 포인트 ===
+// 1) 메인통장(main_<groupId>)은 숨김 카테고리로 생성됩니다 (UI 목록에는 배정에 포함되지 않음).
+// 2) 각 그룹(특히 type === "salary") 화면에서 "배정금액"을 입력하면,
+//    매월 26일에 그 배정 금액만큼 자동으로 메인 -> 서브 분배가 기록됩니다.
+// 3) 분배/월급 자동기록은 메모 키워드로 구분(SALARY:, ALLOC:)하여 같은 달에 중복 반영되지 않도록 처리.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
+import { motion } from "framer-motion";
 
-// ===== 유틸 =====
-const COLORS = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#64748b", "#14b8a6", "#d946ef"];
-const KRW = (v) => (isNaN(v) ? "-" : v.toLocaleString("ko-KR") + "원");
+// ==== Firebase (공동 사용 동기화: 선택) ====
+import { initializeApp } from "firebase/app";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import {
+  getFirestore, doc, setDoc, onSnapshot,
+  collection, addDoc, getDocs, query, orderBy, limit, enableIndexedDbPersistence
+} from "firebase/firestore";
+
+// ==== 환경 변수 → 없으면 로컬에 저장된 설정(JSON) 사용 ====
+const envConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+};
+function getFirebaseConfig() {
+  const hasEnv = Object.values(envConfig).every((v) => typeof v === "string" && v.length > 0);
+  if (hasEnv) return { ...envConfig };
+  try { const raw = localStorage.getItem("budget-fbconfig"); if (raw) return JSON.parse(raw); } catch {}
+  return null;
+}
+
+// ==== 유틸 ====
+const COLORS = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#64748b"];
+const KRW = (v) => (isNaN(v) ? "-" : Number(v).toLocaleString("ko-KR") + "원");
 const todayStr = () => {
-  const d = new Date(); const y = d.getFullYear();
+  const d = new Date();
+  const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 };
 const thisYM = () => new Date().toISOString().slice(0, 7);
 const shiftYM = (ym, delta) => {
-  const [y, m] = ym.split("-").map(Number);
+  const [y, m] = ym.split("-").map((n) => parseInt(n, 10));
   const d = new Date(y, m - 1 + delta, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yy}-${mm}`;
 };
 const clampDay = (ym, day) => {
-  const [y, m] = ym.split("-").map(Number);
+  const [y, m] = ym.split("-").map((n) => parseInt(n, 10));
   const last = new Date(y, m, 0).getDate();
-  return String(Math.max(1, Math.min(last, Number(day) || 1))).padStart(2, "0");
+  const d = Math.max(1, Math.min(last, Number(day) || 1));
+  return String(d).padStart(2, "0");
 };
 
-// ===== 기본 그룹/카테고리 =====
-// 그룹: 월급(salary) 1개만 두고, 하위 통장을 모두 여기에 둡니다.
-const GROUP_SALARY = { id: "salary", name: "월급통장", type: "salary", pool: 0 };
-
-// "메인(월급)" 카테고리 id
-const MAIN_CAT_ID = (groupId) => `main_${groupId}`;
-
-// 질문에서 주신 자동이체 통장 목록(은행/금액) — 26일에 자동배분
-// name: 화면에 보일 통장 이름, bank: 은행명, amount: 월 배분금액(원)
-const FIXED_ALLOCATIONS = [
-  { id: "siu_seonwoo_apt", name: "시우선우 주택청약 통장", bank: "우리은행", amount: 80000 },
-  { id: "seonwoo_daycare", name: "선우어린이집비 통장", bank: "농협은행", amount: 180000 },
-  { id: "transport", name: "교통비통장", bank: "농협은행", amount: 120000 },
-  { id: "workout", name: "운동통장", bank: "농협은행", amount: 100000 },
-  { id: "fuel", name: "기름값통장", bank: "농협", amount: 150000 },
-  { id: "siu_academy", name: "시우학원통장", bank: "예은농협", amount: 150000 },
-  { id: "tomorrow_savings", name: "내일저축계좌통장", bank: "하나은행", amount: 100000 },
-  { id: "seonwoo_insurance", name: "선우보험비통장", bank: "예은농협", amount: 160000 },
-  { id: "yeeun_allowance_phone", name: "예은용돈+통신비통장", bank: "예은카카오뱅크", amount: 160000 },
-  { id: "hyundai_ins", name: "현대해상보험통장", bank: "기업은행", amount: 90000 },
-  { id: "living", name: "생활비통장", bank: "예은농협", amount: 600000 },
-  { id: "siu_activity", name: "시우특활비통장", bank: "농협", amount: 230000 },
-  { id: "youth_hope", name: "청년희망적금통장", bank: "국민", amount: 500000 },
-  { id: "loan_interest_kids_apt", name: "대출이자,자녀청약통장", bank: "우리", amount: 420000 },
-  { id: "meal", name: "밥값통장", bank: "카카오뱅크", amount: 300000 },
-  { id: "family_events", name: "경조사통장", bank: "농협", amount: 50000 },
-];
-
-// ===== 월 모델 =====
-function initialMonthlyModel(ym) {
-  const mainCat = { id: MAIN_CAT_ID(GROUP_SALARY.id), name: `${GROUP_SALARY.name} (메인)`, amount: 0, bank: "", groupId: GROUP_SALARY.id, isMain: true };
-  const subCats = FIXED_ALLOCATIONS.map(a => ({ id: a.id, name: a.name, amount: a.amount, bank: a.bank, groupId: GROUP_SALARY.id, isMain: false }));
-  return {
-    month: ym,
-    groups: [{ ...GROUP_SALARY }],
-    categories: [mainCat, ...subCats],
-    entries: {}, // { [catId]: [{date, amount, type: 'income'|'expense', memo}] }
-  };
+// ==== 로컬 백업/복원 유틸 ====
+function collectBudgetLocalStorage() {
+  const items = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key) continue;
+    if (key.startsWith("budget-") && /^\\d{4}-\\d{2}$/.test(key.slice(7))) {
+      items.push({ key, value: localStorage.getItem(key) });
+    }
+    if (key === "budget-fbconfig" || key === "budget-houseId") {
+      items.push({ key, value: localStorage.getItem(key) });
+    }
+  }
+  return items;
+}
+function downloadTextFile(filename, text) {
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+function makeBackupPayload() {
+  return { type: "budget-backup", version: 4, exportedAt: new Date().toISOString(), items: collectBudgetLocalStorage() };
+}
+async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) {
+  if (!obj || obj.type !== "budget-backup" || !Array.isArray(obj.items)) {
+    alert("백업 파일 형식이 올바르지 않습니다.");
+    return false;
+  }
+  let overwritten = 0;
+  for (const { key, value } of obj.items) {
+    const exists = localStorage.getItem(key) !== null;
+    if (exists && askBeforeOverwrite) {
+      const ok = confirm(`기존 데이터가 있습니다.\\n[${key}]을(를) 덮어쓸까요?`);
+      if (!ok) continue;
+    }
+    try {
+      localStorage.setItem(key, value);
+      if (exists) overwritten++;
+    } catch {
+      alert(`[${key}] 저장 중 오류가 발생했습니다.`);
+      return false;
+    }
+  }
+  return { overwritten, total: obj.items.length };
 }
 
+// ==== 기본 데이터 ====
+const DEFAULT_GROUPS = [
+  { id: "salary",  name: "월급통장", type: "salary",  pool: 0 },
+  { id: "savings", name: "저축통장", type: "generic", pool: 0 },
+];
+const DEFAULT_CATEGORIES = [
+  { id: "living",    name: "생활비 통장", amount: 0, groupId: "salary" },
+  { id: "academy",   name: "학원비 통장", amount: 0, groupId: "salary" },
+  { id: "food",      name: "밥값 통장",   amount: 0, groupId: "salary" },
+  { id: "phone",     name: "통신비 통장", amount: 0, groupId: "salary" },
+  { id: "allowance", name: "용돈 통장",   amount: 0, groupId: "salary" },
+  { id: "siu",       name: "시우 통장",   amount: 0, groupId: "savings" },
+  { id: "seonwoo",   name: "선우 통장",   amount: 0, groupId: "savings" },
+];
+const MAIN_CAT_ID = (groupId) => `main_${groupId}`;
+
+// 자동 메모 키
+const MEMO_SALARY = (groupId, ym) => `SALARY:${groupId}:${ym}`;
+const MEMO_ALLOC  = (groupId, catId, ym) => `ALLOC:${groupId}:${catId}:${ym}`;
+const isSalaryMemo = (memo, groupId, ym) => memo === MEMO_SALARY(groupId, ym);
+const isAllocMemo  = (memo, groupId, catId, ym) => memo === MEMO_ALLOC(groupId, catId, ym);
+
+// ==== 월 모델 훅 ====
+function initialMonthlyModel(ym) {
+  return {
+    month: ym,
+    groups: DEFAULT_GROUPS.map((g) => ({ ...g })),
+    categories: [
+      // 각 그룹의 메인 통장(숨김/특수)
+      ...DEFAULT_GROUPS.map((g) => ({ id: MAIN_CAT_ID(g.id), name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true })),
+      ...DEFAULT_CATEGORIES.map((c) => ({ ...c, isMain: false })),
+    ],
+    entries: {},
+  };
+}
+function ensureMainCats(model) {
+  const groups = model.groups || [];
+  const cats = model.categories || [];
+  const ids = new Set(cats.map((c) => c.id));
+  const add = [];
+  groups.forEach((g) => {
+    const id = MAIN_CAT_ID(g.id);
+    if (!ids.has(id)) add.push({ id, name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true });
+  });
+  return add.length ? { ...model, categories: [...cats, ...add] } : model;
+}
 function useMonthlyModel(ym) {
   const STORAGE_KEY = `budget-${ym}`;
   const [model, setModel] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : initialMonthlyModel(ym);
+      const m = raw ? JSON.parse(raw) : initialMonthlyModel(ym);
+      return ensureMainCats(m);
     } catch {
       return initialMonthlyModel(ym);
     }
   });
-
-  // 월이 바뀌면 해당 월의 모델 로드
   useEffect(() => {
+    const key = `budget-${ym}`;
     try {
-      const raw = localStorage.getItem(`budget-${ym}`);
-      setModel(raw ? JSON.parse(raw) : initialMonthlyModel(ym));
+      const raw = localStorage.getItem(key);
+      const m = raw ? JSON.parse(raw) : initialMonthlyModel(ym);
+      setModel(ensureMainCats(m));
     } catch {
       setModel(initialMonthlyModel(ym));
     }
   }, [ym]);
-
-  // 저장
   useEffect(() => {
     try { localStorage.setItem(`budget-${ym}`, JSON.stringify(model)); } catch {}
   }, [model, ym]);
-
   return [model, setModel];
 }
 
-// ===== 자동 적용 (25/26) =====
-const MEMO_SALARY = (ym) => `SALARY:${ym}`;
-const MEMO_ALLOC  = (id, name) => `ALLOC:${id} ${name}`;
+// ==== 자동 적용: 25일 월급 + 26일 자동분배 ====
+function applyAutomations(model, ym) {
+  let m = ensureMainCats({ ...model, categories: [...(model.categories || [])] });
+  m.entries = { ...(m.entries || {}) };
 
-function applyAutoSalaryAndAllocations(model, ym) {
-  const m = { ...model, entries: { ...(model.entries || {}) } };
-  const mainCatId = MAIN_CAT_ID(GROUP_SALARY.id);
-
-  // 1) 이번 달의 기존 자동 생성분 제거 (SALARY/ALLOC)
-  Object.keys(m.entries).forEach(catId => {
-    m.entries[catId] = (m.entries[catId] || []).filter(e => {
-      if (!e?.date?.startsWith(ym + "-")) return true;
-      const mm = e.memo || "";
-      return !(mm === MEMO_SALARY(ym) || mm.startsWith("ALLOC:"));
+  // 1) 이번 달 SALARY/ALLOC 메모 제거 (우리 자동 생성분만)
+  (m.categories || []).forEach((cat) => {
+    const arr = m.entries[cat.id] || [];
+    m.entries[cat.id] = arr.filter((e) => {
+      if (!e?.memo) return true;
+      // SALARY
+      if (m.groups.some((g) => isSalaryMemo(e.memo, g.id, ym))) return false;
+      // ALLOC
+      const parts = e.memo.split(":");
+      if (parts[0] === "ALLOC" && e.date?.startsWith(ym + "-")) return false;
+      return true;
     });
   });
 
-  // 2) 25일: 월급 입금 (+) — 그룹의 pool 금액 사용
-  const salaryAmount = Number((m.groups.find(g => g.id === GROUP_SALARY.id)?.pool) || 0);
-  if (salaryAmount > 0) {
-    const date25 = `${ym}-${clampDay(ym, 25)}`;
-    const entry = { date: date25, amount: salaryAmount, memo: MEMO_SALARY(ym), type: "income" };
-    m.entries[mainCatId] = [...(m.entries[mainCatId] || []), entry];
-  }
+  // 2) 월급 그룹(type==='salary')들에 대해 25일 입금
+  m.groups
+    .filter((g) => g.type === "salary")
+    .forEach((g) => {
+      const mainCat = MAIN_CAT_ID(g.id);
+      const amount = Number(g.pool) || 0;
+      if (amount <= 0) return;
+      const date = `${ym}-${clampDay(ym, 25)}`;
+      const entry = { date, amount, memo: MEMO_SALARY(g.id, ym), type: "income" };
+      m.entries[mainCat] = [...(m.entries[mainCat] || []), entry];
+    });
 
-  // 3) 26일: 자동배분 (메인 -, 각 하위 +)
-  const date26 = `${ym}-${clampDay(ym, 26)}`;
-  FIXED_ALLOCATIONS.forEach(a => {
-    const amt = Number(a.amount) || 0;
-    if (amt <= 0) return;
-    const memo = MEMO_ALLOC(a.id, a.name);
+  // 3) 26일 자동분배: 각 그룹별로 서브 카테고리 amount 기준
+  m.groups.forEach((g) => {
+    const mainCat = MAIN_CAT_ID(g.id);
+    const date = `${ym}-${clampDay(ym, 26)}`;
+    const subs = (m.categories || []).filter((c) => c.groupId === g.id && !c.isMain);
+    subs.forEach((c) => {
+      const allocAmt = Number(c.amount) || 0;
+      if (allocAmt <= 0) return;
+      const memo = MEMO_ALLOC(g.id, c.id, ym);
 
-    // 메인에서 출금(-)
-    m.entries[mainCatId] = [...(m.entries[mainCatId] || []), { date: date26, amount: amt, memo, type: "expense" }];
+      // 메인에서 출금(-)
+      const out = { date, amount: allocAmt, memo, type: "expense" };
+      m.entries[mainCat] = [...(m.entries[mainCat] || []), out];
 
-    // 대상 통장에 입금(+)
-    m.entries[a.id] = [...(m.entries[a.id] || []), { date: date26, amount: amt, memo, type: "income" }];
+      // 서브에 입금(+)
+      const into = { date, amount: allocAmt, memo, type: "income" };
+      m.entries[c.id] = [...(m.entries[c.id] || []), into];
+    });
   });
 
   return m;
 }
 
-// ===== 메인 컴포넌트 =====
 export default function App() {
+  // ===== 월 선택 =====
   const [ym, setYM] = useState(thisYM());
-  const [model, setModel] = useMonthlyModel(ym);
   const [selectedDate, setSelectedDate] = useState(() => `${ym}-01`);
-  useEffect(() => setSelectedDate(`${ym}-01`), [ym]);
+  useEffect(() => { setSelectedDate(`${ym}-01`); }, [ym]);
 
-  // 메인 탭 (calendar | salary)
-  const [tab, setTab] = useState("salary"); // 기본: 월급 탭 먼저
+  // ===== 월별 모델 =====
+  const [model, setModel] = useMonthlyModel(ym);
 
-  // 25/26 자동반영
+  // ===== Firebase 상태 & 초기화 =====
+  const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
+  const [houseId, setHouseId] = useState(() => localStorage.getItem("budget-houseId") || "");
+  const [houseInput, setHouseInput] = useState(houseId);
+  const remoteApplyingRef = useRef(false);
+  const saveTimerRef = useRef(null);
+
+  // 메인 탭
+  const [mainTab, setMainTab] = useState("calendar");
+
+  // 날짜 클릭 모달
+  const [dayOpen, setDayOpen] = useState(false);
+
+  // 스냅샷
+  const [snapshots, setSnapshots] = useState([]);
+  const [restoreId, setRestoreId] = useState("");
+  const [isSavingSnap, setIsSavingSnap] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  // 백업/복원 파일 인풋
+  const fileInputRef = useRef(null);
+
+  // ===== 백업/복원 버튼 핸들러 =====
+  const handleExportAll = () => {
+    const payload = makeBackupPayload();
+    const filename = `budget-backup-${new Date().toISOString().replaceAll(":", "-")}.json`;
+    downloadTextFile(filename, JSON.stringify(payload, null, 2));
+  };
+  const openImportDialog = () => fileInputRef.current?.click();
+  const onImportFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const obj = JSON.parse(text);
+      const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
+      if (result) {
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
+        setModel((prev) => {
+          try {
+            const raw = localStorage.getItem(`budget-${ym}`);
+            return raw ? ensureMainCats(JSON.parse(raw)) : prev;
+          } catch { return prev; }
+        });
+      }
+    } catch {
+      alert("백업 파일을 읽는 중 오류가 발생했습니다.");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // Firebase init
   useEffect(() => {
-    setModel((m) => applyAutoSalaryAndAllocations(m, ym));
+    if (fb.app) return;
+    const cfg = getFirebaseConfig();
+    if (!cfg) return;
+    try {
+      const app = initializeApp(cfg);
+      const auth = getAuth(app);
+      const db = getFirestore(app);
+      const hasEnv = Object.values(envConfig).every((v) => typeof v === "string" && v.length > 0);
+      setFb({ app, auth, db, user: auth.currentUser, cfgFromEnv: hasEnv });
+      enableIndexedDbPersistence(db).catch(() => {});
+      onAuthStateChanged(auth, (user) => setFb((p) => ({ ...p, user })));
+    } catch (e) {
+      console.warn("Firebase init failed:", e);
+    }
+  }, [fb.app]);
+
+  // 실시간 수신
+  useEffect(() => {
+    if (!fb.db || !fb.user || !houseId) return;
+    const ref = doc(fb.db, "budgets", houseId, "months", ym);
+    const unsub = onSnapshot(ref, (snap) => {
+      const data = snap.data();
+      if (data && data.model) {
+        remoteApplyingRef.current = true;
+        setModel(ensureMainCats(data.model));
+        remoteApplyingRef.current = false;
+      }
+    });
+    return () => unsub();
+  }, [fb.db, fb.user, houseId, ym, setModel]);
+
+  // 디바운스 저장
+  useEffect(() => {
+    if (!fb.db || !fb.user || !houseId) return;
+    if (remoteApplyingRef.current) return;
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const ref = doc(fb.db, "budgets", houseId, "months", ym);
+      await setDoc(ref, { model, updatedAt: new Date().toISOString() }, { merge: true });
+    }, 400);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [model, fb.db, fb.user, houseId, ym]);
+
+  // ===== 핵심: 월 바뀌면 25/26 자동반영 =====
+  useEffect(() => {
+    setModel((m) => applyAutomations(m, ym));
   }, [ym, setModel]);
 
-  // 편의 액션
-  const updateGroupPool = (value) =>
-    setModel((m) => ({ ...m, groups: m.groups.map(g => g.id === GROUP_SALARY.id ? { ...g, pool: Number(value) || 0 } : g) }));
+  // ==== 편의 액션 ====
+  const setFirebaseConfigFromPrompt = () => {
+    const raw = prompt("Firebase 설정 JSON을 붙여넣으세요 (apiKey, authDomain, projectId, appId 등)");
+    if (!raw) return;
+    try { JSON.parse(raw); localStorage.setItem("budget-fbconfig", raw); alert("저장됨! 새로고침 후 적용됩니다."); }
+    catch { alert("JSON이 올바르지 않습니다."); }
+  };
+  const signInGoogle = async () => {
+    if (!fb.auth) return alert("먼저 연동 설정을 해주세요.");
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(fb.auth, provider);
+  };
+  const signOutAll = async () => { if (fb.auth) await signOut(fb.auth); };
+  const connectHouse = () => {
+    if (!houseInput) return;
+    const id = houseInput.trim();
+    setHouseId(id);
+    localStorage.setItem("budget-houseId", id);
+  };
 
-  const updateCategory = (id, patch) =>
-    setModel((m) => ({ ...m, categories: m.categories.map(c => c.id === id ? { ...c, ...patch } : c) }));
+  const saveSnapshot = async () => {
+    if (!fb.db || !fb.user || !houseId) return alert("먼저 로그인/연결을 해주세요.");
+    setIsSavingSnap(true);
+    try {
+      const col = collection(fb.db, "budgets", houseId, "months", ym, "snapshots");
+      await addDoc(col, { model, createdAt: new Date().toISOString() });
+      const qs = await getDocs(query(col, orderBy("createdAt", "desc"), limit(10)));
+      setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
+      alert("스냅샷 저장 완료!");
+    } catch {
+      alert("스냅샷 저장 중 오류가 발생했습니다.");
+    } finally {
+      setIsSavingSnap(false);
+    }
+  };
+  const restoreFromSnapshot = async () => {
+    if (!restoreId) return alert("복원할 스냅샷을 선택하세요.");
+    const snap = snapshots.find((s) => s.id === restoreId);
+    if (!snap) return alert("스냅샷을 찾지 못했습니다.");
+    setIsRestoring(true);
+    try { setModel(ensureMainCats(snap.model)); alert("스냅샷 복원 완료!"); }
+    finally { setIsRestoring(false); }
+  };
+
+  // ==== 그룹/카테고리/기록 ====
+  const groups = model.groups || [];
+  const categories = useMemo(() => (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary" })), [model.categories]);
+
+  useEffect(() => {
+    const ids = new Set(groups.map((g) => g.id));
+    if (mainTab !== "calendar" && !ids.has(mainTab)) setMainTab("calendar");
+  }, [groups, mainTab]);
+
+  const updateGroup = (id, patch) =>
+    setModel((m) => ({ ...m, groups: m.groups.map((g) => (g.id === id ? { ...g, ...patch } : g)) }));
+  const addGroup = () => {
+    const name = prompt("새 메인 탭 이름 (예: 비상금통장)"); if (!name) return;
+    const isSalary = confirm("이 그룹을 '월급 그룹'으로 설정할까요?");
+    const id = `grp_${Date.now().toString(36)}`;
+    setModel((m) => ensureMainCats({ ...m, groups: [...m.groups, { id, name, type: isSalary ? "salary" : "generic", pool: 0 }] }));
+    setMainTab(id);
+  };
+  const renameGroup = (id) => {
+    const g = groups.find((x) => x.id === id);
+    const name = prompt("그룹 이름 변경", g?.name || "");
+    if (!name) return;
+    updateGroup(id, { name });
+    // 메인 카테고리 이름도 반영
+    setModel((m) => ({
+      ...m,
+      categories: (m.categories || []).map((c) => c.id === MAIN_CAT_ID(id) ? { ...c, name: `${name} (메인)` } : c),
+    }));
+  };
+  const toggleGroupType = (id) => {
+    const g = groups.find((x) => x.id === id);
+    if (!g) return;
+    updateGroup(id, { type: g.type === "salary" ? "generic" : "salary" });
+  };
+  const deleteGroup = (id) => {
+    const hasCats = categories.some((c) => c.groupId === id && !c.isMain);
+    if (!confirm(hasCats ? "이 그룹의 통장/기록까지 모두 삭제할까요?" : "그룹을 삭제할까요?")) return;
+    setModel((m) => {
+      const mainId = MAIN_CAT_ID(id);
+      return {
+        ...m,
+        groups: m.groups.filter((g) => g.id !== id),
+        categories: m.categories.filter((c) => c.groupId !== id),
+        entries: Object.fromEntries(
+          Object.entries(m.entries || {}).filter(([catId]) => catId !== mainId && !(m.categories || []).some((c) => c.id === catId && c.groupId === id))
+        ),
+      };
+    });
+    setMainTab("calendar");
+  };
+
+  const addCategoryRow = (groupId) => {
+    const name = prompt("새 통장 이름", "새 통장"); if (!name) return;
+    const id = `cat_${Date.now().toString(36)}`;
+    setModel((m) => ({ ...m, categories: [...m.categories, { id, name, amount: 0, groupId, isMain: false }] }));
+  };
+  const updateCategory = (id, field, value) =>
+    setModel((m) => ({ ...m, categories: m.categories.map((c) => (c.id === id ? { ...c, [field]: field === "amount" ? Number(value) || 0 : value } : c)) }));
+  const deleteCategoryRow = (id) => {
+    const cat = categories.find((c) => c.id === id);
+    if (cat?.isMain) return alert("메인 통장은 삭제할 수 없습니다.");
+    const hasEntries = (model.entries?.[id] || []).length > 0;
+    if (!confirm(hasEntries ? "이 통장에 기록이 있습니다. 삭제할까요?" : "삭제할까요?")) return;
+    setModel((m) => ({
+      ...m,
+      categories: m.categories.filter((c) => c.id !== id),
+      entries: Object.fromEntries(Object.entries(m.entries || {}).filter(([k]) => k !== id)),
+    }));
+  };
 
   const addEntry = (catId, entry) =>
     setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: [...(m.entries?.[catId] || []), entry] } }));
-
   const removeEntry = (catId, idx) =>
     setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: (m.entries?.[catId] || []).filter((_, i) => i !== idx) } }));
 
-  const resetMonth = () => {
-    if (!confirm(`${ym} 데이터를 초기화할까요?`)) return;
+  const resetAll = () => {
+    if (!confirm(`${ym} 데이터를 모두 초기화할까요?`)) return;
     setModel(initialMonthlyModel(ym));
     setSelectedDate(`${ym}-01`);
-    setTab("salary");
+    setMainTab("calendar");
   };
 
-  // 파생 값
-  const categories = model.categories || [];
-  const mainCat = categories.find(c => c.isMain);
-  const subCats = categories.filter(c => !c.isMain);
+  // ==== 파생값 ====
+  const activeGroup = groups.find((g) => g.id === mainTab);
+  const catsOfActive = categories.filter((c) => c.groupId === activeGroup?.id);
+  const catsForAlloc = catsOfActive.filter((c) => !c.isMain); // 배정/파이에는 메인 제외
+  const sumAllocated = useMemo(() => catsForAlloc.reduce((s, c) => s + (Number(c.amount) || 0), 0), [catsForAlloc]);
+  const remainPool = Math.max(0, Number(activeGroup?.pool || 0) - sumAllocated);
 
-  // 파이/배정 요약: 하위통장 amount 합계 & 남는돈
-  const allocatedSum = subCats.reduce((s, c) => s + (Number(c.amount) || 0), 0);
-  const salaryPool = Number((model.groups.find(g => g.id === GROUP_SALARY.id)?.pool) || 0);
-  const remainPool = Math.max(0, salaryPool - allocatedSum);
-
-  // 달력 집계
+  // 달력 합계
   const calendarData = useMemo(() => {
     const map = {}; const prefix = ym + "-";
     Object.entries(model.entries || {}).forEach(([_, arr]) => {
@@ -199,68 +506,133 @@ export default function App() {
     });
     return map;
   }, [model.entries, ym]);
-
   const monthTotals = useMemo(() => {
     let income = 0, expense = 0;
-    Object.values(calendarData).forEach(v => { income += v.income || 0; expense += v.expense || 0; });
+    Object.values(calendarData).forEach((v) => { income += v.income || 0; expense += v.expense || 0; });
     return { income, expense, net: income - expense };
   }, [calendarData]);
 
-  // 최근 20개
+  const overallPie = useMemo(() => {
+    if (!activeGroup) return [];
+    const data = catsForAlloc.map((c) => ({ name: c.name, value: c.amount }));
+    data.push({ name: "남는 돈", value: remainPool });
+    return data;
+  }, [catsForAlloc, remainPool, activeGroup]);
+
+  // 최근 기록 20개
   const recentEntries = useMemo(() => {
     const list = [];
     Object.entries(model.entries || {}).forEach(([catId, arr]) => {
-      const catName = categories.find(c => c.id === catId)?.name || catId;
-      (arr || []).forEach((e, idx) => list.push({ ...e, catId, idx, catName }));
+      const name = categories.find((c) => c.id === catId)?.name || catId;
+      (arr || []).forEach((e, idx) => list.push({ ...e, catId, idx, catName: name }));
     });
     return list.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20);
   }, [model.entries, categories]);
 
-  // 파이 데이터 (하위통장 + 남는돈)
-  const overallPie = useMemo(() => {
-    const data = subCats.map(c => ({ name: `${c.name}`, value: Number(c.amount) || 0 }));
-    data.push({ name: "남는 돈", value: remainPool });
-    return data;
-  }, [subCats, remainPool]);
-
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800">
+    <div className="min-h-screen w-full bg-slate-50 text-slate-800">
+      {/* ===== Header ===== */}
       <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
-        <div className="mx-auto max-w-6xl px-4 py-4">
+        <div className="mx-auto max-w-7xl px-4 py-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
             <h1 className="text-xl sm:text-2xl font-bold">{ym} 가계부</h1>
             <div className="flex flex-wrap items-center gap-2">
-              <button onClick={() => setTab("salary")} className={`px-3 py-1.5 rounded-xl text-sm ${tab === "salary" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}>월급</button>
-              <button onClick={() => setTab("calendar")} className={`px-3 py-1.5 rounded-xl text-sm ${tab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}>달력</button>
-              <button onClick={() => setYM(shiftYM(ym, -1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">◀ 이전달</button>
-              <div className="px-3 py-1.5 rounded-xl bg-white border">{ym}</div>
-              <button onClick={() => setYM(shiftYM(ym, 1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">다음달 ▶</button>
-              <button onClick={resetMonth} className="px-3 py-1.5 rounded-xl text-sm bg-red-50 text-red-700 hover:bg-red-100">이 달 초기화</button>
+              {fb.cfgFromEnv ? (
+                <span className="px-3 py-1.5 rounded-xl text-xs bg-emerald-100 text-emerald-700">환경변수 연동</span>
+              ) : (
+                <button onClick={setFirebaseConfigFromPrompt} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">연동 설정</button>
+              )}
+              {fb.user ? (
+                <>
+                  <span className="text-sm text-slate-600">로그인됨</span>
+                  <button onClick={signOutAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">로그아웃</button>
+                </>
+              ) : (
+                <button onClick={signInGoogle} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">Google 로그인</button>
+              )}
+              <input value={houseInput} onChange={(e) => setHouseInput(e.target.value)} placeholder="가계부 코드(예: FAMILY2025)" className="px-3 py-1.5 rounded-xl border w-40" />
+              <button onClick={connectHouse} className="px-3 py-1.5 rounded-xl text-sm bg-indigo-600 text-white hover:bg-indigo-700">연결</button>
+
+              <button onClick={saveSnapshot} disabled={isSavingSnap} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 저장</button>
+              <select value={restoreId} onChange={(e) => setRestoreId(e.target.value)} className="px-3 py-1.5 rounded-xl border">
+                <option value="">스냅샷 선택(최근 10개)</option>
+                {snapshots.map((s) => {
+                  const t = new Date(s.createdAt);
+                  const label = `${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+                  return <option key={s.id} value={s.id}>{label}</option>;
+                })}
+              </select>
+              <button onClick={restoreFromSnapshot} disabled={!restoreId || isRestoring} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 disabled:opacity-50">스냅샷 복원</button>
+
+              <button onClick={handleExportAll} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">백업 저장(내보내기)</button>
+              <button onClick={openImportDialog} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">백업 불러오기(복원)</button>
+              <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={onImportFileSelected} />
+
+              <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
             </div>
+          </div>
+
+          {/* 월 이동 스위처 */}
+          <div className="flex items-center gap-2">
+            <button onClick={() => setYM(shiftYM(ym, -1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">◀ 이전달</button>
+            <div className="px-4 py-1.5 rounded-xl bg-white border text-slate-700">{ym}</div>
+            <button onClick={() => setYM(shiftYM(ym, 1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">다음달 ▶</button>
+          </div>
+
+          {/* 메인 탭 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setMainTab("calendar")}
+              className={`px-4 py-2 rounded-xl text-sm ${mainTab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
+            >
+              달력
+            </button>
+            {groups.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setMainTab(g.id)}
+                className={`px-4 py-2 rounded-xl text-sm ${mainTab === g.id ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
+                title={g.type === "salary" ? "월급 그룹" : "일반 그룹"}
+              >
+                {g.name}
+              </button>
+            ))}
+            <button onClick={addGroup} className="px-3 py-2 rounded-xl text-sm bg-emerald-100 text-emerald-800 hover:bg-emerald-200">+ 그룹 추가</button>
+            {activeGroup && mainTab !== "calendar" && (
+              <>
+                <button onClick={() => renameGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">이름변경</button>
+                <button onClick={() => toggleGroupType(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
+                  {activeGroup.type === "salary" ? "일반 그룹으로 변경" : "월급 그룹으로 지정"}
+                </button>
+                <button onClick={() => deleteGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-red-100 text-red-700 hover:bg-red-200">그룹 삭제</button>
+              </>
+            )}
           </div>
         </div>
       </header>
 
-      {tab === "calendar" ? (
-        <main className="mx-auto max-w-6xl px-4 py-6 space-y-6">
+      {/* ===== 메인 컨텐츠 ===== */}
+      {mainTab === "calendar" ? (
+        <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
           <section className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-2">달력 · {ym} 수입/지출</h2>
-            <MonthCalendar ym={ym} data={calendarData} selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+            <h2 className="text-lg font-semibold mb-2">달력 · {ym} 수입/지출 한눈에</h2>
+            <MonthCalendar
+              ym={ym}
+              data={calendarData}
+              selectedDate={selectedDate}
+              onSelectDate={(iso) => { setSelectedDate(iso); setDayOpen(true); }}
+            />
             <div className="mt-4 grid sm:grid-cols-3 gap-3 text-sm">
               <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 수입</div><div className="text-xl font-bold text-emerald-700">{KRW(monthTotals.income)}</div></div>
               <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">이 달 총 지출</div><div className="text-xl font-bold text-rose-700">{KRW(monthTotals.expense)}</div></div>
-              <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">순이동</div><div className="text-xl font-bold">{KRW(monthTotals.net)}</div></div>
+              <div className="bg-slate-50 rounded-xl p-3"><div className="text-slate-500">순이동(수입-지출)</div><div className="text-xl font-bold">{KRW(monthTotals.net)}</div></div>
             </div>
           </section>
 
           <section className="bg-white rounded-2xl shadow p-5">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-base font-semibold">{selectedDate} 상세</h3>
-              <GlobalEntryForm
-                categories={categories}
-                selectedDate={selectedDate}
-                onAdd={(catId, entry) => addEntry(catId, entry)}
-              />
+              <GlobalEntryForm categories={categories} selectedDate={selectedDate} onAdd={(catId, entry) => addEntry(catId, entry)} />
             </div>
             <DateEntriesTable date={selectedDate} categories={categories} entries={model.entries} onRemove={removeEntry} />
           </section>
@@ -271,119 +643,152 @@ export default function App() {
           </section>
         </main>
       ) : (
-        // ===== 월급 탭 =====
-        <main className="mx-auto max-w-6xl px-4 py-6 space-y-8">
-          {/* 1) 월급 입력 + 메인통장 카드 */}
-          <section className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-4">월급 & 메인통장</h2>
-            <div className="flex items-center gap-3">
-              <span className="text-slate-600">월급</span>
-              <input
-                type="number" inputMode="numeric"
-                className="w-56 px-3 py-2 rounded-xl border"
-                placeholder="예: 3,000,000"
-                value={salaryPool}
-                onChange={(e) => updateGroupPool(e.target.value)}
-              />
-              <span className="text-sm text-slate-500">{KRW(salaryPool)}</span>
-            </div>
-
-            <div className="mt-4 grid md:grid-cols-2 gap-4">
-              {mainCat && (
-                <div className="rounded-xl border p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="font-semibold">{mainCat.name}</div>
-                    <div className="text-sm text-slate-500">은행:
-                      <input
-                        className="ml-2 px-2 py-1 rounded-lg border w-32"
-                        value={mainCat.bank || ""}
-                        placeholder="(선택)"
-                        onChange={(e) => updateCategory(mainCat.id, { bank: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                  <EntryForm onAdd={(entry) => addEntry(mainCat.id, entry)} />
-                  <CategoryEntriesTable catId={mainCat.id} entries={model.entries?.[mainCat.id] || []} onRemove={(i) => removeEntry(mainCat.id, i)} />
-                </div>
-              )}
-
-              {/* 파이 차트 요약 */}
-              <div className="rounded-xl border p-4">
-                <div className="font-semibold mb-2">배정 요약</div>
-                <div className="text-sm text-slate-600 mb-2">
-                  하위통장 배정 합계: <b>{KRW(allocatedSum)}</b> / 월급: <b>{KRW(salaryPool)}</b> → 남는 돈: <b>{KRW(remainPool)}</b>
-                  <div className="text-xs text-slate-500 mt-1">※ 25일 월급 입금, 26일 자동배분이 기록에 반영됩니다.</div>
-                </div>
-                <div className="h-60">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={overallPie} dataKey="value" nameKey="name" outerRadius={100} label>
-                        {overallPie.map((_, i) => (<Cell key={`cell-${i}`} fill={COLORS[i % COLORS.length]} />))}
-                      </Pie>
-                      <Tooltip formatter={(val) => KRW(Number(val))} />
-                      <Legend />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+        <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
+          <section className="grid lg:grid-cols-2 gap-6">
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
+              <h2 className="text-lg font-semibold mb-2">
+                1) {activeGroup?.type === "salary" ? "월급 입력(25일 자동입금)" : "그룹 총액(목표/잔액)"}
+              </h2>
+              <div className="mb-2 text-xs text-slate-500">
+                {activeGroup?.type === "salary"
+                  ? "· 25일: 위 금액이 메인통장(+)\n· 26일: 아래 서브 통장 '배정금액'만큼 메인(-) → 서브(+) 자동분배"
+                  : "· '월급 그룹'으로 지정하면 25/26 자동반영 규칙이 적용됩니다."}
               </div>
-            </div>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-600">{activeGroup?.type === "salary" ? "월급" : "총액"}</span>
+                <input
+                  type="number" inputMode="numeric"
+                  className="w-full sm:w-64 px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="예: 3,000,000"
+                  value={activeGroup?.pool || 0}
+                  onChange={(e) => updateGroup(activeGroup.id, { pool: Number(e.target.value) || 0 })}
+                />
+                <span className="text-sm text-slate-500">{KRW(activeGroup?.pool || 0)}</span>
+              </div>
+              <div className="mt-4">
+                <button onClick={() => addCategoryRow(activeGroup.id)} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">서브 통장 추가</button>
+              </div>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500">
+                      <th className="py-2">통장 이름</th>
+                      <th className="py-2">배정금액(원, 26일 자동분배)</th>
+                      <th className="py-2">비율(%)</th>
+                      <th className="py-2">삭제</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {catsForAlloc.map((c, idx) => {
+                      const percent = Number(activeGroup?.pool || 0) > 0 ? Math.round(((c.amount || 0) / Number(activeGroup.pool || 0)) * 100) : 0;
+                      return (
+                        <tr key={c.id} className="border-t">
+                          <td className="py-2 flex items-center gap-2">
+                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
+                            <input type="text" className="px-2 py-1 rounded-lg border w-32" value={c.name} onChange={(e) => updateCategory(c.id, "name", e.target.value)} />
+                          </td>
+                          <td className="py-2">
+                            <input type="number" className="w-40 px-2 py-1 rounded-lg border" value={c.amount ?? 0} onChange={(e) => updateCategory(c.id, "amount", e.target.value)} />
+                            <span className="ml-2 text-slate-500">{KRW(c.amount ?? 0)}</span>
+                          </td>
+                          <td className="py-2">{percent}%</td>
+                          <td className="py-2">
+                            <button onClick={() => deleteCategoryRow(c.id)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    <tr className="border-t">
+                      <td className="py-2 flex items-center gap-2">
+                        <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />
+                        남는 돈
+                      </td>
+                      <td className="py-2">{KRW(remainPool)}</td>
+                      <td className="py-2 text-slate-500">
+                        {Number(activeGroup?.pool || 0) > 0 ? Math.round((remainPool / Number(activeGroup.pool || 0)) * 100) : 0}%
+                      </td>
+                      <td />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
+              <h2 className="text-lg font-semibold mb-4">2) {activeGroup?.name} 원형그래프</h2>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={overallPie} dataKey="value" nameKey="name" outerRadius={100} label>
+                      {overallPie.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
+                    </Pie>
+                    <Tooltip formatter={(val) => KRW(Number(val))} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </motion.div>
           </section>
 
-          {/* 2) 하위통장 목록 (이름 옆 은행, 배정금액 수정 가능) */}
-          <section className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-3">하위 통장 (26일 자동배분 대상)</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-500">
-                    <th className="py-2">통장 이름</th>
-                    <th className="py-2">은행</th>
-                    <th className="py-2">배정금액</th>
-                    <th className="py-2">지출/수입 기록</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {subCats.map((c, idx) => {
-                    const expense = (model.entries?.[c.id] || []).filter(e => (e.type || "expense") === "expense").reduce((s, e) => s + (Number(e.amount) || 0), 0);
-                    const income  = (model.entries?.[c.id] || []).filter(e => (e.type || "expense") === "income" ).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-                    const used = Math.max(0, expense - income);
-                    const remain = Math.max(0, (Number(c.amount) || 0) - used);
-                    return (
-                      <tr key={c.id} className="border-t align-top">
-                        <td className="py-2">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
-                            <div className="font-medium">{c.name}</div>
-                          </div>
-                        </td>
-                        <td className="py-2">
-                          <input className="px-2 py-1 rounded-lg border w-36" value={c.bank || ""} onChange={(e) => updateCategory(c.id, { bank: e.target.value })} />
-                        </td>
-                        <td className="py-2">
-                          <input type="number" className="px-2 py-1 rounded-lg border w-32" value={c.amount ?? 0} onChange={(e) => updateCategory(c.id, { amount: Number(e.target.value) || 0 })} />
-                          <span className="ml-2 text-slate-500">{KRW(c.amount ?? 0)}</span>
-                        </td>
-                        <td className="py-2">
-                          <div className="mb-2 text-xs text-slate-500">지출 {KRW(expense)} / 수입 {KRW(income)} / 남음 {KRW(remain)}</div>
-                          <EntryForm onAdd={(entry) => addEntry(c.id, entry)} />
-                          <CategoryEntriesTable catId={c.id} entries={model.entries?.[c.id] || []} onRemove={(i) => removeEntry(c.id, i)} />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">3) {activeGroup?.name} 통장별 상세 (지출/수입 기록)</h2>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {catsOfActive.filter(c => !c.isMain).map((c, idx) => {
+                const expense = (model.entries?.[c.id] || []).filter(e => (e.type || "expense") === "expense").reduce((s, e) => s + (Number(e.amount) || 0), 0);
+                const income  = (model.entries?.[c.id] || []).filter(e => (e.type || "expense") === "income" ).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+                const used = Math.max(0, expense - income);
+                const remain = Math.max(0, (c.amount || 0) - used);
+                const catPie = [{ name: "사용", value: Math.max(0, used) }, { name: "남음", value: Math.max(0, remain) }];
+                return (
+                  <motion.div key={c.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: idx * 0.03 }} className="bg-white rounded-2xl shadow p-4 flex flex-col">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
+                        <h3 className="font-semibold">{c.name}</h3>
+                      </div>
+                      <div className="text-sm text-slate-500">배정: <b>{KRW(c.amount || 0)}</b></div>
+                    </div>
+                    <div className="h-44">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={catPie} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70}>
+                            {catPie.map((_, i) => (<Cell key={`cat-${c.id}-${i}`} fill={i === 0 ? COLORS[idx % COLORS.length] : "#e2e8f0"} />))}
+                          </Pie>
+                          <Tooltip formatter={(val) => KRW(Number(val))} />
+                          <Legend />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-sm">
+                      <div className="bg-slate-50 rounded-xl p-2 text-center">지출 <div className="font-semibold">{KRW(expense)}</div></div>
+                      <div className="bg-slate-50 rounded-xl p-2 text-center">수입 <div className="font-semibold">{KRW(income)}</div></div>
+                      <div className="bg-slate-50 rounded-xl p-2 text-center">남음 <div className="font-semibold">{KRW(remain)}</div></div>
+                    </div>
+                    <EntryForm onAdd={(entry) => addEntry(c.id, entry)} />
+                    <CategoryEntriesTable catId={c.id} entries={model.entries?.[c.id] || []} onRemove={(i) => removeEntry(c.id, i)} />
+                  </motion.div>
+                );
+              })}
             </div>
           </section>
         </main>
       )}
+
+      <DayDetailModal
+        open={dayOpen}
+        onClose={() => setDayOpen(false)}
+        date={selectedDate}
+        categories={categories}
+        entries={model.entries}
+        onRemove={removeEntry}
+      />
     </div>
   );
 }
 
-// ===== 달력 =====
+/* ===== 달력 컴포넌트 ===== */
 function MonthCalendar({ ym, data, selectedDate, onSelectDate }) {
-  const [y, m] = ym.split("-").map(Number);
+  const [y, m] = ym.split("-").map((n) => parseInt(n, 10));
   const first = new Date(y, m - 1, 1);
   const firstWeekday = first.getDay();
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -395,10 +800,9 @@ function MonthCalendar({ ym, data, selectedDate, onSelectDate }) {
 
   return (
     <div>
-      <div className="grid grid-cols-7 gap-1 text-xs mb-1">
-        {["일","월","화","수","목","금","토"].map((w) => (<div key={w} className="py-1 text-center font-medium text-slate-500">{w}</div>))}
-      </div>
+      <div className="mb-2 text-sm text-slate-500">{y}년 {m}월</div>
       <div className="grid grid-cols-7 gap-1 text-xs">
+        {["일","월","화","수","목","금","토"].map((w) => (<div key={w} className="py-1 text-center font-medium text-slate-500">{w}</div>))}
         {cells.map((d, idx) => {
           if (d === null) return <div key={idx} className="h-20 rounded-lg bg-slate-50/70" />;
           const dd = String(d).padStart(2, "0");
@@ -427,7 +831,7 @@ function MonthCalendar({ ym, data, selectedDate, onSelectDate }) {
   );
 }
 
-// ===== 폼/테이블 =====
+/* ===== 전역 입력 폼 (달력 탭) ===== */
 function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   const [catId, setCatId] = useState(categories[0]?.id || "");
   const [date, setDate] = useState(selectedDate || todayStr());
@@ -446,7 +850,6 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
     onAdd(catId, { date, amount: a, memo: memo.trim(), type });
     setAmount(0); setMemo("");
   };
-
   return (
     <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-6 gap-2">
       <select className="px-3 py-2 rounded-xl border" value={catId} onChange={(e) => setCatId(e.target.value)}>
@@ -464,6 +867,7 @@ function GlobalEntryForm({ categories, selectedDate, onAdd }) {
   );
 }
 
+/* ===== 카테고리 내부 입력 폼 + 테이블 ===== */
 function EntryForm({ onAdd }) {
   const d = new Date(); const yyyy = d.getFullYear(); const mm = String(d.getMonth()+1).padStart(2,"0"); const dd = String(d.getDate()).padStart(2,"0");
   const defaultDate = `${yyyy}-${mm}-${dd}`;
@@ -471,7 +875,6 @@ function EntryForm({ onAdd }) {
   const [amount, setAmount] = useState(0);
   const [memo, setMemo] = useState("");
   const [type, setType] = useState("expense");
-
   const submit = (e) => {
     e.preventDefault();
     const a = Number(amount) || 0;
@@ -479,7 +882,6 @@ function EntryForm({ onAdd }) {
     onAdd({ date, amount: a, memo: memo.trim(), type });
     setAmount(0); setMemo("");
   };
-
   return (
     <form onSubmit={submit} className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
       <input type="date" className="px-3 py-2 rounded-xl border" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -492,7 +894,6 @@ function EntryForm({ onAdd }) {
     </form>
   );
 }
-
 function CategoryEntriesTable({ catId, entries, onRemove }) {
   return (
     <div className="mt-3 overflow-x-auto">
@@ -509,7 +910,7 @@ function CategoryEntriesTable({ catId, entries, onRemove }) {
               <td className="py-1">{(e.type || "expense") === "income" ? "수입" : "지출"}</td>
               <td className="py-1">{KRW(e.amount)}</td>
               <td className="py-1">{e.memo}</td>
-              <td className="py-1"><button onClick={() => onRemove(catId, i)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button></td>
+              <td className="py-1"><button onClick={() => onRemove(i)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button></td>
             </tr>
           ))}
           {entries.length === 0 && (<tr><td colSpan={5} className="py-2 text-center text-slate-400">아직 기록이 없습니다.</td></tr>)}
@@ -518,7 +919,6 @@ function CategoryEntriesTable({ catId, entries, onRemove }) {
     </div>
   );
 }
-
 function DateEntriesTable({ date, categories, entries, onRemove }) {
   const rows = [];
   Object.entries(entries || {}).forEach(([catId, arr]) => {
@@ -535,8 +935,8 @@ function DateEntriesTable({ date, categories, entries, onRemove }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((e, i) => (
-            <tr key={`${e.catId}-${e.idx}-${i}`} className="border-t">
+          {rows.map((e) => (
+            <tr key={`${e.catId}-${e.idx}`} className="border-t">
               <td className="py-1">{e.catName}</td>
               <td className="py-1">{(e.type || "expense") === "income" ? "수입" : "지출"}</td>
               <td className="py-1">{KRW(e.amount)}</td>
@@ -549,7 +949,6 @@ function DateEntriesTable({ date, categories, entries, onRemove }) {
     </div>
   );
 }
-
 function RecentTable({ rows, onRemove }) {
   if (!rows || rows.length === 0) {
     return <div className="text-center text-slate-400">최근 기록이 없습니다.</div>;
@@ -582,6 +981,102 @@ function RecentTable({ rows, onRemove }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) {
+  if (!open) return null;
+
+  const rows = [];
+  Object.entries(entries || {}).forEach(([catId, arr]) => {
+    const catName = categories.find(c => c.id === catId)?.name || catId;
+    (arr || []).forEach((e, idx) => {
+      if (e.date === date) rows.push({ ...e, catId, idx, catName });
+    });
+  });
+
+  const byCat = {};
+  rows.forEach(r => {
+    if (!byCat[r.catId]) byCat[r.catId] = { name: r.catName, income: 0, expense: 0 };
+    const t = (r.type || 'expense') === 'income' ? 'income' : 'expense';
+    byCat[r.catId][t] += Number(r.amount) || 0;
+  });
+
+  const totals = rows.reduce((acc, r) => {
+    const t = (r.type || 'expense') === 'income' ? 'income' : 'expense';
+    acc[t] += Number(r.amount) || 0;
+    return acc;
+  }, { income: 0, expense: 0 });
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative z-[101] w-[95vw] max-w-3xl max-h-[80vh] overflow-hidden rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <h3 className="text-base sm:text-lg font-semibold">{date} 내역</h3>
+          <button onClick={onClose} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200">닫기</button>
+        </div>
+
+        <div className="p-4 space-y-4 overflow-auto">
+          <div className="grid sm:grid-cols-3 gap-3 text-sm">
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">총 수입</div>
+              <div className="text-lg font-bold text-emerald-700">{KRW(totals.income)}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">총 지출</div>
+              <div className="text-lg font-bold text-rose-700">{KRW(totals.expense)}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3">
+              <div className="text-slate-500">순이동(수입-지출)</div>
+              <div className="text-lg font-bold">{KRW(totals.income - totals.expense)}</div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 text-xs">
+            {Object.values(byCat).length === 0 ? (
+              <span className="text-slate-400">이 날짜의 기록이 없습니다.</span>
+            ) : (
+              Object.values(byCat).map((g) => (
+                <span key={g.name} className="px-3 py-1 rounded-full bg-slate-100">
+                  {g.name} · 수입 {KRW(g.income)} / 지출 {KRW(g.expense)}
+                </span>
+              ))
+            )}
+          </div>
+
+          {rows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500">
+                    <th className="py-1">통장</th>
+                    <th className="py-1">유형</th>
+                    <th className="py-1">금액</th>
+                    <th className="py-1">메모</th>
+                    <th className="py-1">삭제</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={`${r.catId}-${r.idx}-${i}`} className="border-t">
+                      <td className="py-1">{r.catName}</td>
+                      <td className="py-1">{(r.type || 'expense') === 'income' ? '수입' : '지출'}</td>
+                      <td className="py-1">{KRW(r.amount)}</td>
+                      <td className="py-1">{r.memo}</td>
+                      <td className="py-1">
+                        <button onClick={() => onRemove(r.catId, r.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
