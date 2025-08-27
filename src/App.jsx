@@ -1,3 +1,21 @@
+// App.jsx
+// ==== React 기반 가계부 (25일 월급 자동입금 + 26일 자동분배 / 자동이체 탭 제거 버전) ====
+// - 25일: 월급 그룹의 메인통장(main_<groupId>)에 SALARY 메모로 입금(+)
+// - 26일: 같은 그룹 내 서브 통장들의 "배정 금액"을 기준으로
+//         메인통장에서 출금(-) & 각 서브 통장에 입금(+) 자동 반영
+// - "자동이체" 탭을 완전히 제거, 월급통장 화면만으로 관리
+//
+// === 사용법 ===
+// npm i firebase framer-motion recharts
+// (Tailwind는 프로젝트 설정에 맞게 적용)
+// npm run dev
+//
+// === 설계 포인트 ===
+// 1) 메인통장(main_<groupId>)은 숨김 카테고리로 생성됩니다 (UI 목록에는 배정에 포함되지 않음).
+// 2) 각 그룹(특히 type === "salary") 화면에서 "배정금액"을 입력하면,
+//    매월 26일에 그 배정 금액만큼 자동으로 메인 -> 서브 분배가 기록됩니다.
+// 3) 분배/월급 자동기록은 메모 키워드로 구분(SALARY:, ALLOC:)하여 같은 달에 중복 반영되지 않도록 처리.
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { motion } from "framer-motion";
@@ -29,7 +47,7 @@ function getFirebaseConfig() {
 
 // ==== 유틸 ====
 const COLORS = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#64748b"];
-const KRW = (v) => (isNaN(v) ? "-" : v.toLocaleString("ko-KR") + "원");
+const KRW = (v) => (isNaN(v) ? "-" : Number(v).toLocaleString("ko-KR") + "원");
 const todayStr = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -58,10 +76,10 @@ function collectBudgetLocalStorage() {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
+    if (key.startsWith("budget-") && /^\\d{4}-\\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
-    if (key === "budget-fbconfig" || key === "budget-houseId" || key === "budget-autos") {
+    if (key === "budget-fbconfig" || key === "budget-houseId") {
       items.push({ key, value: localStorage.getItem(key) });
     }
   }
@@ -79,7 +97,7 @@ function downloadTextFile(filename, text) {
   URL.revokeObjectURL(url);
 }
 function makeBackupPayload() {
-  return { type: "budget-backup", version: 3, exportedAt: new Date().toISOString(), items: collectBudgetLocalStorage() };
+  return { type: "budget-backup", version: 4, exportedAt: new Date().toISOString(), items: collectBudgetLocalStorage() };
 }
 async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) {
   if (!obj || obj.type !== "budget-backup" || !Array.isArray(obj.items)) {
@@ -90,7 +108,7 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   for (const { key, value } of obj.items) {
     const exists = localStorage.getItem(key) !== null;
     if (exists && askBeforeOverwrite) {
-      const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
+      const ok = confirm(`기존 데이터가 있습니다.\\n[${key}]을(를) 덮어쓸까요?`);
       if (!ok) continue;
     }
     try {
@@ -103,54 +121,6 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   }
   return { overwritten, total: obj.items.length };
 }
-
-// ==== 자동이체 & 자동 월급 ====
-/**
- * 자동 항목:
- *  - id, name
- *  - amount: 금액
- *  - sourceGroupId: 출금 메인탭(월급/저축 등 그룹)
- *  - targetCatId: 입금될 통장(카테고리, isMain=false)
- *  - day: 기본 26일
- *  - active: 사용 여부
- */
-const AUTOS_KEY = "budget-autos";
-function loadAutos() {
-  try {
-    const raw = localStorage.getItem(AUTOS_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    // 구버전 호환
-    return (list || []).map((a) => ({
-      id: a.id || `auto_${Math.random().toString(36).slice(2)}`,
-      name: a.name || "자동이체",
-      amount: Number(a.amount) || 0,
-      day: a.day ?? 26,
-      sourceGroupId: a.sourceGroupId || "salary",
-      targetCatId: a.targetCatId || a.catId || "",
-      active: a.active !== false,
-    }));
-  } catch {
-    return [];
-  }
-}
-function saveAutos(list) {
-  try { localStorage.setItem(AUTOS_KEY, JSON.stringify(list)); } catch {}
-}
-function newAutoTemplate() {
-  return {
-    id: `auto_${Date.now().toString(36)}`,
-    name: "",
-    amount: 0,
-    day: 26,
-    sourceGroupId: "salary",
-    targetCatId: "",
-    active: true,
-  };
-}
-const MEMO_SALARY = (groupId, ym) => `SALARY:${groupId}:${ym}`;
-const MEMO_XFER   = (autoId, name) => `XFER:${autoId} ${name || ""}`.trim();
-const isSalaryMemo = (memo, groupId, ym) => memo === MEMO_SALARY(groupId, ym);
-const parseXferId = (memo) => (memo?.startsWith("XFER:") ? memo.slice(5).split(" ")[0] : null);
 
 // ==== 기본 데이터 ====
 const DEFAULT_GROUPS = [
@@ -168,12 +138,19 @@ const DEFAULT_CATEGORIES = [
 ];
 const MAIN_CAT_ID = (groupId) => `main_${groupId}`;
 
+// 자동 메모 키
+const MEMO_SALARY = (groupId, ym) => `SALARY:${groupId}:${ym}`;
+const MEMO_ALLOC  = (groupId, catId, ym) => `ALLOC:${groupId}:${catId}:${ym}`;
+const isSalaryMemo = (memo, groupId, ym) => memo === MEMO_SALARY(groupId, ym);
+const isAllocMemo  = (memo, groupId, catId, ym) => memo === MEMO_ALLOC(groupId, catId, ym);
+
 // ==== 월 모델 훅 ====
 function initialMonthlyModel(ym) {
   return {
     month: ym,
     groups: DEFAULT_GROUPS.map((g) => ({ ...g })),
     categories: [
+      // 각 그룹의 메인 통장(숨김/특수)
       ...DEFAULT_GROUPS.map((g) => ({ id: MAIN_CAT_ID(g.id), name: `${g.name} (메인)`, amount: 0, groupId: g.id, isMain: true })),
       ...DEFAULT_CATEGORIES.map((c) => ({ ...c, isMain: false })),
     ],
@@ -218,20 +195,26 @@ function useMonthlyModel(ym) {
   return [model, setModel];
 }
 
-// ==== 자동 적용: 25일 월급 + 26일 자동이체 ====
-function applyAutomations(model, autos, ym) {
+// ==== 자동 적용: 25일 월급 + 26일 자동분배 ====
+function applyAutomations(model, ym) {
   let m = ensureMainCats({ ...model, categories: [...(model.categories || [])] });
   m.entries = { ...(m.entries || {}) };
 
-  // 1) 이번 달 SALARY 메모 제거 후 다시 넣기
+  // 1) 이번 달 SALARY/ALLOC 메모 제거 (우리 자동 생성분만)
   (m.categories || []).forEach((cat) => {
     const arr = m.entries[cat.id] || [];
     m.entries[cat.id] = arr.filter((e) => {
       if (!e?.memo) return true;
-      return !m.groups.some((g) => isSalaryMemo(e.memo, g.id, ym));
+      // SALARY
+      if (m.groups.some((g) => isSalaryMemo(e.memo, g.id, ym))) return false;
+      // ALLOC
+      const parts = e.memo.split(":");
+      if (parts[0] === "ALLOC" && e.date?.startsWith(ym + "-")) return false;
+      return true;
     });
   });
-  // 월급 그룹(type==='salary')들에 대해 25일 입금
+
+  // 2) 월급 그룹(type==='salary')들에 대해 25일 입금
   m.groups
     .filter((g) => g.type === "salary")
     .forEach((g) => {
@@ -243,36 +226,25 @@ function applyAutomations(model, autos, ym) {
       m.entries[mainCat] = [...(m.entries[mainCat] || []), entry];
     });
 
-  // 2) 이번 달 XFER 메모 제거 후 현재 설정으로 다시 넣기
-  const autoIds = new Set((autos || []).map((a) => a.id));
-  (m.categories || []).forEach((cat) => {
-    const arr = m.entries[cat.id] || [];
-    m.entries[cat.id] = arr.filter((e) => {
-      const id = parseXferId(e?.memo || "");
-      if (!id) return true;
-      return !e?.date?.startsWith(ym + "-") || autoIds.has(id) === false;
+  // 3) 26일 자동분배: 각 그룹별로 서브 카테고리 amount 기준
+  m.groups.forEach((g) => {
+    const mainCat = MAIN_CAT_ID(g.id);
+    const date = `${ym}-${clampDay(ym, 26)}`;
+    const subs = (m.categories || []).filter((c) => c.groupId === g.id && !c.isMain);
+    subs.forEach((c) => {
+      const allocAmt = Number(c.amount) || 0;
+      if (allocAmt <= 0) return;
+      const memo = MEMO_ALLOC(g.id, c.id, ym);
+
+      // 메인에서 출금(-)
+      const out = { date, amount: allocAmt, memo, type: "expense" };
+      m.entries[mainCat] = [...(m.entries[mainCat] || []), out];
+
+      // 서브에 입금(+)
+      const into = { date, amount: allocAmt, memo, type: "income" };
+      m.entries[c.id] = [...(m.entries[c.id] || []), into];
     });
   });
-
-  // 3) 최신 자동이체 재적용(기본 26일)
-  (autos || [])
-    .filter((a) => a.active && a.targetCatId && m.categories.some((c) => c.id === a.targetCatId && !c.isMain))
-    .forEach((a) => {
-      const srcMain = MAIN_CAT_ID(a.sourceGroupId || "salary");
-      if (!m.categories.some((c) => c.id === srcMain)) return;
-      const date = `${ym}-${clampDay(ym, a.day || 26)}`;
-      const amount = Number(a.amount) || 0;
-      if (amount <= 0) return;
-      const memo = MEMO_XFER(a.id, a.name);
-
-      // 출금: 메인에서 -
-      const out = { date, amount, memo, type: "expense" };
-      m.entries[srcMain] = [...(m.entries[srcMain] || []), out];
-
-      // 입금: 대상 통장 +
-      const into = { date, amount, memo, type: "income" };
-      m.entries[a.targetCatId] = [...(m.entries[a.targetCatId] || []), into];
-    });
 
   return m;
 }
@@ -285,10 +257,6 @@ export default function App() {
 
   // ===== 월별 모델 =====
   const [model, setModel] = useMonthlyModel(ym);
-
-  // ===== 자동이체 목록 =====
-  const [autos, setAutos] = useState(loadAutos());
-  useEffect(() => { saveAutos(autos); }, [autos]);
 
   // ===== Firebase 상태 & 초기화 =====
   const [fb, setFb] = useState({ app: null, auth: null, db: null, user: null, cfgFromEnv: false });
@@ -327,14 +295,13 @@ export default function App() {
       const obj = JSON.parse(text);
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
         setModel((prev) => {
           try {
             const raw = localStorage.getItem(`budget-${ym}`);
             return raw ? ensureMainCats(JSON.parse(raw)) : prev;
           } catch { return prev; }
         });
-        setAutos(loadAutos());
       }
     } catch {
       alert("백업 파일을 읽는 중 오류가 발생했습니다.");
@@ -388,21 +355,10 @@ export default function App() {
     return () => clearTimeout(saveTimerRef.current);
   }, [model, fb.db, fb.user, houseId, ym]);
 
-  // 스냅샷 목록
+  // ===== 핵심: 월 바뀌면 25/26 자동반영 =====
   useEffect(() => {
-    const load = async () => {
-      if (!fb.db || !fb.user || !houseId) return setSnapshots([]);
-      const col = collection(fb.db, "budgets", houseId, "months", ym, "snapshots");
-      const qs = await getDocs(query(col, orderBy("createdAt", "desc"), limit(10)));
-      setSnapshots(qs.docs.map((d) => ({ id: d.id, ...d.data() })));
-    };
-    load();
-  }, [fb.db, fb.user, houseId, ym]);
-
-  // ===== 핵심: 월 바뀌거나 자동목록 바뀌면 25/26 자동반영 =====
-  useEffect(() => {
-    setModel((m) => applyAutomations(m, autos, ym));
-  }, [ym, autos, setModel]);
+    setModel((m) => applyAutomations(m, ym));
+  }, [ym, setModel]);
 
   // ==== 편의 액션 ====
   const setFirebaseConfigFromPrompt = () => {
@@ -454,7 +410,7 @@ export default function App() {
 
   useEffect(() => {
     const ids = new Set(groups.map((g) => g.id));
-    if (mainTab !== "calendar" && mainTab !== "auto" && !ids.has(mainTab)) setMainTab("calendar");
+    if (mainTab !== "calendar" && !ids.has(mainTab)) setMainTab("calendar");
   }, [groups, mainTab]);
 
   const updateGroup = (id, patch) =>
@@ -631,12 +587,6 @@ export default function App() {
             >
               달력
             </button>
-            <button
-              onClick={() => setMainTab("auto")}
-              className={`px-4 py-2 rounded-xl text-sm ${mainTab === "auto" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}
-            >
-              자동이체
-            </button>
             {groups.map((g) => (
               <button
                 key={g.id}
@@ -648,7 +598,7 @@ export default function App() {
               </button>
             ))}
             <button onClick={addGroup} className="px-3 py-2 rounded-xl text-sm bg-emerald-100 text-emerald-800 hover:bg-emerald-200">+ 그룹 추가</button>
-            {activeGroup && mainTab !== "calendar" && mainTab !== "auto" && (
+            {activeGroup && mainTab !== "calendar" && (
               <>
                 <button onClick={() => renameGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">이름변경</button>
                 <button onClick={() => toggleGroupType(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">
@@ -692,38 +642,18 @@ export default function App() {
             <RecentTable rows={recentEntries} onRemove={(e) => removeEntry(e.catId, e.idx)} />
           </section>
         </main>
-      ) : mainTab === "auto" ? (
-        <main className="mx-auto max-w-5xl px-4 py-6 space-y-6">
-          <section className="bg-white rounded-2xl shadow p-5">
-            <h2 className="text-lg font-semibold mb-4">자동이체 목록 (매월 자동 반영)</h2>
-
-            <AutoForm
-              groups={groups}
-              categories={categories}
-              onAdd={(a) => setAutos((list) => [...list, a])}
-            />
-
-            <AutoTable
-              autos={autos}
-              groups={groups}
-              categories={categories}
-              onChange={(idx, patch) => setAutos(list => list.map((a,i) => i===idx ? { ...a, ...patch } : a))}
-              onDelete={(idx) => setAutos(list => list.filter((_,i) => i!==idx))}
-            />
-
-            <div className="mt-3 text-xs text-slate-500">
-              · 25일: 월급 그룹의 메인통장에 자동 입금됩니다.<br/>
-              · 26일: 아래 설정대로 메인통장에서 출금(-), 선택한 서브통장으로 입금(+)됩니다.<br/>
-              · 자동 항목은 메모에 <code className="bg-slate-100 px-1 rounded">XFER:아이디</code>로 표시되어 매월 한 번만 반영됩니다.<br/>
-              · 날짜는 해당 달의 말일을 넘지 않도록 자동 조정됩니다(예: 31일 → 30일/28~29일).
-            </div>
-          </section>
-        </main>
       ) : (
         <main className="mx-auto max-w-7xl px-4 py-6 space-y-8">
           <section className="grid lg:grid-cols-2 gap-6">
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
-              <h2 className="text-lg font-semibold mb-4">1) {activeGroup?.type === "salary" ? "월급 입력(금액)" : "그룹 총액(목표/잔액)"}</h2>
+              <h2 className="text-lg font-semibold mb-2">
+                1) {activeGroup?.type === "salary" ? "월급 입력(25일 자동입금)" : "그룹 총액(목표/잔액)"}
+              </h2>
+              <div className="mb-2 text-xs text-slate-500">
+                {activeGroup?.type === "salary"
+                  ? "· 25일: 위 금액이 메인통장(+)\n· 26일: 아래 서브 통장 '배정금액'만큼 메인(-) → 서브(+) 자동분배"
+                  : "· '월급 그룹'으로 지정하면 25/26 자동반영 규칙이 적용됩니다."}
+              </div>
               <div className="flex items-center gap-3">
                 <span className="text-slate-600">{activeGroup?.type === "salary" ? "월급" : "총액"}</span>
                 <input
@@ -736,14 +666,14 @@ export default function App() {
                 <span className="text-sm text-slate-500">{KRW(activeGroup?.pool || 0)}</span>
               </div>
               <div className="mt-4">
-                <button onClick={() => addCategoryRow(activeGroup.id)} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">카테고리 추가</button>
+                <button onClick={() => addCategoryRow(activeGroup.id)} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">서브 통장 추가</button>
               </div>
               <div className="mt-2 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-slate-500">
                       <th className="py-2">통장 이름</th>
-                      <th className="py-2">배정금액(원)</th>
+                      <th className="py-2">배정금액(원, 26일 자동분배)</th>
                       <th className="py-2">비율(%)</th>
                       <th className="py-2">삭제</th>
                     </tr>
@@ -852,154 +782,6 @@ export default function App() {
         entries={model.entries}
         onRemove={removeEntry}
       />
-    </div>
-  );
-}
-
-/* ===== 자동이체 탭: 추가 폼 ===== */
-function AutoForm({ groups, categories, onAdd }) {
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState(0);
-  const [day, setDay] = useState(26);
-  const [sourceGroupId, setSourceGroupId] = useState(groups[0]?.id || "salary");
-
-  const catsOfGroup = useMemo(
-    () => categories.filter(c => c.groupId === sourceGroupId && !c.isMain),
-    [categories, sourceGroupId]
-  );
-  const [targetCatId, setTargetCatId] = useState(catsOfGroup[0]?.id || "");
-
-  useEffect(() => {
-    const first = catsOfGroup[0]?.id || "";
-    setTargetCatId(prev => (prev && catsOfGroup.some(c => c.id === prev)) ? prev : first);
-  }, [sourceGroupId, categories]);
-
-  useEffect(() => {
-    if (!sourceGroupId && groups[0]) setSourceGroupId(groups[0].id);
-  }, [groups, sourceGroupId]);
-
-  const submit = (e) => {
-    e.preventDefault();
-    const a = Number(amount) || 0;
-    if (!targetCatId) return alert("입금(서브) 통장을 선택하세요.");
-    if (a <= 0) return alert("금액을 입력하세요.");
-    const item = newAutoTemplate();
-    item.name = name.trim() || "자동이체";
-    item.amount = a;
-    item.day = Number(day) || 26;
-    item.sourceGroupId = sourceGroupId;
-    item.targetCatId = targetCatId;
-    onAdd(item);
-    setName(""); setAmount(0); setDay(26);
-  };
-
-  return (
-    <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-8 gap-2 mb-4">
-      <input type="text" className="px-3 py-2 rounded-xl border" placeholder="항목명 (예: 생활비/통신비/용돈 등)"
-             value={name} onChange={(e) => setName(e.target.value)} />
-      <input type="number" inputMode="numeric" className="px-3 py-2 rounded-xl border" placeholder="금액"
-             value={amount} onChange={(e) => setAmount(e.target.value)} />
-      <input type="number" min={1} max={31} className="px-3 py-2 rounded-xl border" placeholder="매월 며칠(기본 26일)"
-             value={day} onChange={(e) => setDay(e.target.value)} />
-      <select className="px-3 py-2 rounded-xl border" value={sourceGroupId} onChange={(e)=>setSourceGroupId(e.target.value)}>
-        {groups.map((g) => (<option key={g.id} value={g.id}>{g.name} (메인에서 -)</option>))}
-      </select>
-      <select className="px-3 py-2 rounded-xl border" value={targetCatId} onChange={(e)=>setTargetCatId(e.target.value)}>
-        {catsOfGroup.length === 0 ? (
-          <option value="">(서브 통장 없음)</option>
-        ) : (
-          catsOfGroup.map((c) => (<option key={c.id} value={c.id}>{c.name} (입금 +)</option>))
-        )}
-      </select>
-      <div className="sm:col-span-3 flex items-center">
-        <button className="px-3 py-2 rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 w-full sm:w-auto">추가</button>
-      </div>
-    </form>
-  );
-}
-
-/* ===== 자동이체 탭: 목록 테이블 ===== */
-function AutoTable({ autos, groups, categories, onChange, onDelete }) {
-  const groupById = useMemo(() => Object.fromEntries(groups.map(g => [g.id, g])), [groups]);
-  const catsByGroup = useMemo(() => {
-    const m = {};
-    groups.forEach(g => { m[g.id] = categories.filter(c => c.groupId === g.id && !c.isMain); });
-    return m;
-  }, [groups, categories]);
-
-  if (!autos || autos.length === 0) {
-    return <div className="text-center text-slate-400">등록된 자동이체가 없습니다. 위 폼에서 추가하세요.</div>;
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-slate-500">
-            <th className="py-1">사용</th>
-            <th className="py-1">항목명</th>
-            <th className="py-1">금액</th>
-            <th className="py-1">매월</th>
-            <th className="py-1">출금 메인탭</th>
-            <th className="py-1">입금 통장(서브)</th>
-            <th className="py-1">삭제</th>
-          </tr>
-        </thead>
-        <tbody>
-          {autos.map((a, idx) => {
-            const g = groupById[a.sourceGroupId] || groups[0];
-            const groupCats = catsByGroup[g?.id] || [];
-            return (
-              <tr key={a.id} className="border-t">
-                <td className="py-1">
-                  <input type="checkbox" checked={!!a.active} onChange={(e) => onChange(idx, { active: e.target.checked })} />
-                </td>
-                <td className="py-1">
-                  <input type="text" className="px-2 py-1 rounded-lg border w-40" value={a.name}
-                    onChange={(e)=>onChange(idx, { name: e.target.value })} />
-                </td>
-                <td className="py-1">
-                  <input type="number" className="px-2 py-1 rounded-lg border w-32" value={a.amount}
-                    onChange={(e)=>onChange(idx, { amount: Number(e.target.value) || 0 })} />
-                </td>
-                <td className="py-1">
-                  <input type="number" min={1} max={31} className="px-2 py-1 rounded-lg border w-20" value={a.day}
-                    onChange={(e)=>onChange(idx, { day: Number(e.target.value) || 26 })} />
-                </td>
-                <td className="py-1">
-                  <select
-                    className="px-2 py-1 rounded-lg border w-44"
-                    value={a.sourceGroupId}
-                    onChange={(e) => {
-                      const newGroupId = e.target.value;
-                      const firstCat = (catsByGroup[newGroupId] || [])[0];
-                      onChange(idx, { sourceGroupId: newGroupId, targetCatId: firstCat ? firstCat.id : "" });
-                    }}
-                  >
-                    {groups.map((g) => (<option key={g.id} value={g.id}>{g.name}</option>))}
-                  </select>
-                </td>
-                <td className="py-1">
-                  <select
-                    className="px-2 py-1 rounded-lg border w-56"
-                    value={a.targetCatId}
-                    onChange={(e)=>onChange(idx, { targetCatId: e.target.value })}
-                  >
-                    {groupCats.length === 0 ? (
-                      <option value="">(서브 통장 없음)</option>
-                    ) : (
-                      groupCats.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))
-                    )}
-                  </select>
-                </td>
-                <td className="py-1">
-                  <button onClick={()=>onDelete(idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">삭제</button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
     </div>
   );
 }
@@ -1283,10 +1065,7 @@ function DayDetailModal({ open, onClose, date, categories, entries, onRemove }) 
                       <td className="py-1">{KRW(r.amount)}</td>
                       <td className="py-1">{r.memo}</td>
                       <td className="py-1">
-                        <button
-                          onClick={() => onRemove(r.catId, r.idx)}
-                          className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200"
-                        >
+                        <button onClick={() => onRemove(r.catId, r.idx)} className="text-xs px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200">
                           삭제
                         </button>
                       </td>
