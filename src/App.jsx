@@ -19,7 +19,9 @@
 // 5) 서브 통장에 '은행 이름' 필드 추가.
 // 6) 서브 통장 관리 테이블에 페이지네이션(1,2,3…) 추가.
 // 7) 원형그래프/표 비율을 정규화(0.1% 단위)해서 합계 100.0% 보장.
-
+// 8) [업데이트] 원형그래프 라벨을 바깥으로 빼고, 2% 미만 조각은 라벨을 숨김. h-80로 높이고 반지름/옵션 조정.
+//
+// eslint-disable-next-line
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { motion } from "framer-motion";
@@ -103,7 +105,7 @@ function collectBudgetLocalStorage() {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (!key) continue;
-    if (key.startsWith("budget-") && /^\\d{4}-\\d{2}$/.test(key.slice(7))) {
+    if (key.startsWith("budget-") && /^\d{4}-\d{2}$/.test(key.slice(7))) {
       items.push({ key, value: localStorage.getItem(key) });
     }
     if (key === "budget-fbconfig" || key === "budget-houseId") {
@@ -135,7 +137,7 @@ async function restoreFromBackupObject(obj, { askBeforeOverwrite = true } = {}) 
   for (const { key, value } of obj.items) {
     const exists = localStorage.getItem(key) !== null;
     if (exists && askBeforeOverwrite) {
-      const ok = confirm(`기존 데이터가 있습니다.\\n[${key}]을(를) 덮어쓸까요?`);
+      const ok = confirm(`기존 데이터가 있습니다.\n[${key}]을(를) 덮어쓸까요?`);
       if (!ok) continue;
     }
     try {
@@ -320,7 +322,7 @@ export default function App() {
       const obj = JSON.parse(text);
       const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
       if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
+        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.\n현재 달(${ym})이 포함되어 있으면 화면에 반영됩니다.`);
         setModel((prev) => {
           try {
             const raw = localStorage.getItem(`budget-${ym}`);
@@ -566,10 +568,37 @@ export default function App() {
 
   // 퍼센트 값을 Pie 데이터에 주입(라벨/툴팁 일관성)
   const pieWithPct = useMemo(() => overallPie.map((d, i) => ({ ...d, pct: allPercents[i] || 0 })), [overallPie, allPercents]);
-  const renderPieLabel = ({ index, payload }) => {
+
+  // ===== [변경] 원형그래프 라벨: 외부 배치 + 작은 조각 라벨 숨김 =====
+  const RADIAN = Math.PI / 180;
+  const renderOuterLabel = (props) => {
+    const { cx, cy, midAngle, outerRadius, index, name } = props;
     const pct = pieWithPct[index]?.pct ?? 0;
-    const name = payload?.name ?? "";
-    return `${name} ${fmtPct(pct)}`;
+
+    // 너무 작은 조각(2% 미만)은 라벨 숨김 → Tooltip/Legend로 안내
+    if (pct < 2) return null;
+
+    // 라벨을 조각 밖으로 배치
+    const r = outerRadius + 16; // 라벨 반경
+    const x = cx + r * Math.cos(-midAngle * RADIAN);
+    const y = cy + r * Math.sin(-midAngle * RADIAN);
+
+    // 이름 길이 축약
+    const baseName = (name || "").replace(/\s*\(메인\)\s*$/, "");
+    const shortName = baseName.length > 8 ? baseName.slice(0, 8) + "…" : baseName;
+
+    return (
+      <text
+        x={x}
+        y={y}
+        textAnchor={x > cx ? "start" : "end"}
+        dominantBaseline="central"
+        fill="#334155"
+        fontSize={11}
+      >
+        {`${shortName} ${fmtPct(pct)}`}
+      </text>
+    );
   };
 
   // 최근 기록 20개
@@ -823,15 +852,19 @@ export default function App() {
 
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
               <h2 className="text-lg font-semibold mb-4">2) {activeGroup?.name} 원형그래프</h2>
-              <div className="h-64">
+              <div className="h-80"> {/* ← h-64에서 h-80으로 확장 */}
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={pieWithPct}
                       dataKey="value"
                       nameKey="name"
-                      outerRadius={100}
-                      label={renderPieLabel}
+                      insideRadius={60}    // 안쪽 반지름
+                      outerRadius={110}    // 바깥 반지름
+                      minAngle={3}         // 최소 각도
+                      paddingAngle={1}     // 조각 간 여백
+                      labelLine={{ stroke: "#94a3b8" }} // 라벨 연결선
+                      label={renderOuterLabel}          // 외부 라벨 렌더러
                     >
                       {pieWithPct.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
                     </Pie>
@@ -842,7 +875,12 @@ export default function App() {
                         return [KRW(Number(val)), `${name} (${fmtPct(pct)})`];
                       }}
                     />
-                    <Legend />
+                    <Legend
+                      verticalAlign="bottom"
+                      align="center"
+                      iconType="circle"
+                      wrapperStyle={{ fontSize: 12 }}
+                    />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
