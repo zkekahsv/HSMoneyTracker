@@ -20,6 +20,7 @@
 // 6) 서브 통장 관리 테이블에 페이지네이션(1,2,3…) 추가.
 // 7) 원형그래프/표 비율을 정규화(0.1% 단위)해서 합계 100.0% 보장.
 // 8) [업데이트] 원형그래프 라벨을 바깥으로 빼고, 2% 미만 조각은 라벨을 숨김. h-80로 높이고 반지름/옵션 조정.
+// 9) [업데이트] "월급 입력" 표 칸 비율 고정 + 모바일 카드형(퍼센트 칩/진행바)로 가독성 개선.
 //
 // eslint-disable-next-line
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -569,21 +570,18 @@ export default function App() {
   // 퍼센트 값을 Pie 데이터에 주입(라벨/툴팁 일관성)
   const pieWithPct = useMemo(() => overallPie.map((d, i) => ({ ...d, pct: allPercents[i] || 0 })), [overallPie, allPercents]);
 
-  // ===== [변경] 원형그래프 라벨: 외부 배치 + 작은 조각 라벨 숨김 =====
+  // ===== 원형그래프 라벨: 외부 배치 + 작은 조각 라벨 숨김 =====
   const RADIAN = Math.PI / 180;
   const renderOuterLabel = (props) => {
     const { cx, cy, midAngle, outerRadius, index, name } = props;
     const pct = pieWithPct[index]?.pct ?? 0;
 
-    // 너무 작은 조각(2% 미만)은 라벨 숨김 → Tooltip/Legend로 안내
     if (pct < 2) return null;
 
-    // 라벨을 조각 밖으로 배치
-    const r = outerRadius + 16; // 라벨 반경
+    const r = outerRadius + 16;
     const x = cx + r * Math.cos(-midAngle * RADIAN);
     const y = cy + r * Math.sin(-midAngle * RADIAN);
 
-    // 이름 길이 축약
     const baseName = (name || "").replace(/\s*\(메인\)\s*$/, "");
     const shortName = baseName.length > 8 ? baseName.slice(0, 8) + "…" : baseName;
 
@@ -755,7 +753,7 @@ export default function App() {
                   : "· '월급 그룹'으로 지정하면 25/26 자동반영 규칙이 적용됩니다."}
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-slate-600">{activeGroup?.type === "salary" ? "월급" : "총액"}</span>
+                <span className="text-slate-600 shrink-0">{activeGroup?.type === "salary" ? "월급" : "총액"}</span>
                 <input
                   type="number" inputMode="numeric"
                   className="w-full sm:w-64 px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -765,11 +763,21 @@ export default function App() {
                 />
                 <span className="text-sm text-slate-500">{KRW(activeGroup?.pool || 0)}</span>
               </div>
+
               <div className="mt-4">
                 <button onClick={() => addCategoryRow(activeGroup.id)} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">서브 통장 추가</button>
               </div>
-              <div className="mt-2 overflow-x-auto">
-                <table className="w-full text-sm">
+
+              {/* 데스크톱: 고정 비율 테이블 */}
+              <div className="mt-2 overflow-x-auto hidden md:block">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-[28%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[38%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[4%]" />
+                  </colgroup>
                   <thead>
                     <tr className="text-left text-slate-500">
                       <th className="py-2">통장 이름</th>
@@ -781,20 +789,40 @@ export default function App() {
                   </thead>
                   <tbody>
                     {catsPage.map((c, idx) => {
-                      const globalIdx = startIdx + idx; // 전체 기준 인덱스
+                      const globalIdx = startIdx + idx;
                       const percent = allPercents[globalIdx] || 0;
                       return (
-                        <tr key={c.id} className="border-t">
-                          <td className="py-2 flex items-center gap-2">
-                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[globalIdx % COLORS.length] }} />
-                            <input type="text" className="px-2 py-1 rounded-lg border w-32" value={c.name} onChange={(e) => updateCategory(c.id, "name", e.target.value)} />
+                        <tr key={c.id} className="border-t align-middle">
+                          <td className="py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[globalIdx % COLORS.length] }} />
+                              <input
+                                type="text"
+                                className="px-2 py-1 rounded-lg border w-full"
+                                value={c.name}
+                                onChange={(e) => updateCategory(c.id, "name", e.target.value)}
+                              />
+                            </div>
                           </td>
                           <td className="py-2">
-                            <input type="text" className="px-2 py-1 rounded-lg border w-28" placeholder="예: 국민" value={c.bankName || ""} onChange={(e) => updateCategory(c.id, "bankName", e.target.value)} />
+                            <input
+                              type="text"
+                              className="px-2 py-1 rounded-lg border w-full"
+                              placeholder="예: 국민"
+                              value={c.bankName || ""}
+                              onChange={(e) => updateCategory(c.id, "bankName", e.target.value)}
+                            />
                           </td>
                           <td className="py-2">
-                            <input type="number" className="w-40 px-2 py-1 rounded-lg border" value={c.amount ?? 0} onChange={(e) => updateCategory(c.id, "amount", e.target.value)} />
-                            <span className="ml-2 text-slate-500">{KRW(c.amount ?? 0)}</span>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                className="px-2 py-1 rounded-lg border w-40 md:w-full"
+                                value={c.amount ?? 0}
+                                onChange={(e) => updateCategory(c.id, "amount", e.target.value)}
+                              />
+                              <span className="text-slate-500 truncate">{KRW(c.amount ?? 0)}</span>
+                            </div>
                           </td>
                           <td className="py-2">{fmtPct(percent)}</td>
                           <td className="py-2">
@@ -804,9 +832,11 @@ export default function App() {
                       );
                     })}
                     <tr className="border-t">
-                      <td className="py-2 flex items-center gap-2">
-                        <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />
-                        남는 돈
+                      <td className="py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />
+                          남는 돈
+                        </div>
                       </td>
                       <td className="py-2 text-slate-400">—</td>
                       <td className="py-2">{KRW(remainPool)}</td>
@@ -848,23 +878,107 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* 모바일: 카드형 리스트(퍼센트 칩 + 진행바 포함) */}
+              <div className="mt-3 space-y-3 md:hidden">
+                {catsForAlloc.map((c, idx) => {
+                  const percent = allPercents[idx] || 0;
+                  return (
+                    <div key={c.id} className="rounded-xl border bg-white p-3 shadow-sm">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[idx % COLORS.length] }} />
+                          <div className="font-medium">{c.name}</div>
+                        </div>
+                        <span className="px-2 py-0.5 text-xs rounded-full bg-slate-100 text-slate-700 font-semibold">
+                          {fmtPct(percent)}
+                        </span>
+                      </div>
+
+                      {c.bankName ? <div className="mt-1 text-xs text-slate-500">은행: {c.bankName}</div> : null}
+
+                      <div className="mt-2">
+                        <label className="text-xs text-slate-500">배정금액</label>
+                        <input
+                          type="number"
+                          className="mt-1 w-full px-3 py-2 rounded-lg border"
+                          value={c.amount ?? 0}
+                          onChange={(e) => updateCategory(c.id, "amount", e.target.value)}
+                        />
+                        <div className="mt-1 text-xs text-slate-600">{KRW(c.amount ?? 0)}</div>
+                      </div>
+
+                      <div className="mt-2">
+                        <div className="h-2 w-full rounded bg-slate-100 overflow-hidden">
+                          <div
+                            className="h-2 rounded"
+                            style={{
+                              width: `${Math.max(0, Math.min(100, percent))}%`,
+                              background: COLORS[idx % COLORS.length]
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between">
+                        <input
+                          type="text"
+                          className="px-3 py-2 rounded-lg border w-full mr-2"
+                          placeholder="은행 이름(선택)"
+                          value={c.bankName || ""}
+                          onChange={(e) => updateCategory(c.id, "bankName", e.target.value)}
+                        />
+                        <button
+                          onClick={() => deleteCategoryRow(c.id)}
+                          className="shrink-0 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* 남는 돈 카드 */}
+                <div className="rounded-xl border bg-white p-3 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-3 h-3 rounded-full" style={{ background: COLORS[5] }} />
+                      <div className="font-medium">남는 돈</div>
+                    </div>
+                    <span className="px-2 py-0.5 text-xs rounded-full bg-slate-100 text-slate-700 font-semibold">
+                      {fmtPct(allPercents[allPercents.length - 1] || 0)}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-sm">{KRW(remainPool)}</div>
+                  <div className="mt-2 h-2 w-full rounded bg-slate-100 overflow-hidden">
+                    <div
+                      className="h-2 rounded"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, allPercents[allPercents.length - 1] || 0))}%`,
+                        background: COLORS[5]
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
             </motion.div>
 
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow p-5">
               <h2 className="text-lg font-semibold mb-4">2) {activeGroup?.name} 원형그래프</h2>
-              <div className="h-80"> {/* ← h-64에서 h-80으로 확장 */}
+              <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={pieWithPct}
                       dataKey="value"
                       nameKey="name"
-                      insideRadius={60}    // 안쪽 반지름
-                      outerRadius={110}    // 바깥 반지름
-                      minAngle={3}         // 최소 각도
-                      paddingAngle={1}     // 조각 간 여백
-                      labelLine={{ stroke: "#94a3b8" }} // 라벨 연결선
-                      label={renderOuterLabel}          // 외부 라벨 렌더러
+                      insideRadius={60}
+                      outerRadius={110}
+                      minAngle={3}
+                      paddingAngle={1}
+                      labelLine={{ stroke: "#94a3b8" }}
+                      label={renderOuterLabel}
                     >
                       {pieWithPct.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
                     </Pie>
@@ -915,7 +1029,7 @@ export default function App() {
                       <div className="flex items-center gap-3 text-sm text-slate-600">
                         <span>배정 <b>{KRW(c.amount || 0)}</b></span>
                         <span>남음 <b>{KRW(remain)}</b></span>
-                        <span className={`inline-block w-6 text-center rounded bg-slate-100`}>{opened ? "▾" : "▸"}</span>
+                        <span className="inline-block w-6 text-center rounded bg-slate-100">{opened ? "▾" : "▸"}</span>
                       </div>
                     </button>
 
