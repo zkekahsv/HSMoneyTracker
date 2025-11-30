@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { INITIAL_DATA } from "./data/initialData";
 import SimpleCalendar from "./components/SimpleCalendar"; 
-import { db } from "./firebase"; // 방금 만든 firebase.js 불러오기
+import { db } from "./fbase"; // 방금 만든 firebase.js 불러오기
 import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 // --- 스타일 정의 ---
