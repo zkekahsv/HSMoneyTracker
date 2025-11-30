@@ -13,5 +13,5 @@ const envConfig = {
 
 
 // 파이어베이스 초기화
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(envConfig);
 export const db = getFirestore(app);
