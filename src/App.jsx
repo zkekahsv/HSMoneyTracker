@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { INITIAL_DATA } from "./data/initialData";
 import SimpleCalendar from "./components/SimpleCalendar"; 
-import { db } from "./fbase"; // 방금 만든 firebase.js 불러오기
+import { db } from "./firebase"; // 방금 만든 firebase.js 불러오기
 import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 // --- 스타일 정의 ---
@@ -48,15 +48,8 @@ const dashLabelStyle = { fontSize: "12px", color: "#64748b", marginBottom: "5px"
 const dashValueStyle = (color) => ({ fontSize: "16px", fontWeight: "bold", color: color });
 
 const typeToggleContainer = { display: "flex", gap: "10px", marginBottom: "10px" };
-// src/App.jsx 의 typeBtnStyle 부분을 이것으로 교체!
-
 const typeBtnStyle = (isActive, type) => ({
-  flex: 1, 
-  padding: "10px", 
-  // border: "none",  <-- (삭제됨) 이 부분이 중복 원인이었습니다!
-  borderRadius: "8px", 
-  fontWeight: "bold", 
-  cursor: "pointer",
+  flex: 1, padding: "10px", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer",
   backgroundColor: isActive ? (type === "income" ? "#eff6ff" : "#fef2f2") : "#f3f4f6",
   color: isActive ? (type === "income" ? "#2563eb" : "#ef4444") : "#9ca3af",
   border: isActive ? (type === "income" ? "2px solid #2563eb" : "2px solid #ef4444") : "2px solid transparent"
