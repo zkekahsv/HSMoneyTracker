@@ -1,215 +1,565 @@
-/* eslint-disable */
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import CalendarPage from "./pages/CalendarPage";
-import GroupPage from "./pages/GroupPage";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { INITIAL_DATA } from "./data/initialData";
+import SimpleCalendar from "./components/SimpleCalendar"; 
 
-import useMonthlyModel from "./hooks/useMonthlyModel";
-import { DEFAULT_GROUPS, DEFAULT_CATEGORIES, MAIN_CAT_ID, COLORS } from "./constants";
-import { KRW, thisYM, shiftYM } from "./utils/format";
-import { normalizePercents } from "./utils/percent";
-import { makeBackupPayload, downloadTextFile, restoreFromBackupObject } from "./utils/storage";
-import { applyAutomations } from "./logic/automations";
+const containerStyle = { maxWidth: "600px", margin: "0 auto", padding: "20px 20px 80px 20px", fontFamily: "sans-serif", minHeight: "100vh", position: "relative" };
+const cardStyle = { backgroundColor: "#fff", padding: "20px", borderRadius: "15px", boxShadow: "0 2px 5px rgba(0,0,0,0.05)", marginBottom: "20px" };
+const titleStyle = { fontSize: "18px", fontWeight: "bold", marginBottom: "15px", borderBottom: "2px solid #eee", paddingBottom: "10px" };
+const inputStyle = { width: "100%", padding: "10px", marginBottom: "10px", border: "1px solid #ddd", borderRadius: "5px", boxSizing: "border-box" };
+const btnStyle = { width: "100%", padding: "12px", backgroundColor: "#2563eb", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer" };
+const resetBtnStyle = { fontSize: "12px", color: "#999", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", float: "right" };
 
-export default function App() {
-  const [ym, setYM] = useState(thisYM());
-  const [selectedDate, setSelectedDate] = useState(() => `${ym}-01`);
-  useEffect(() => { setSelectedDate(`${ym}-01`); }, [ym]);
+const navBtnStyle = { background: "none", border: "1px solid #ddd", borderRadius: "50%", width: "32px", height: "32px", cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "#fff" };
+const headerStyle = { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" };
 
-  const [model, setModel] = useMonthlyModel(ym);
+// 하단 탭바 스타일
+const bottomNavStyle = {
+  position: "fixed", bottom: 0, left: 0, right: 0, height: "60px", backgroundColor: "white", borderTop: "1px solid #eee",
+  display: "flex", justifyContent: "space-around", alignItems: "center", zIndex: 900, maxWidth: "600px", margin: "0 auto"
+};
+const bottomNavItemStyle = (isActive) => ({
+  flex: 1, textAlign: "center", fontSize: "12px", color: isActive ? "#2563eb" : "#94a3b8", cursor: "pointer", fontWeight: isActive ? "bold" : "normal"
+});
 
-  // Firebase (optional) disabled here for brevity; you can re-enable in your project setup
+const chartBarStyle = (width, color) => ({
+  height: "100%", backgroundColor: color, borderRadius: "4px", width: width, transition: "width 0.5s ease"
+});
 
-  // UI states
-  const [mainTab, setMainTab] = useState("calendar");
+const smallBtnStyle = { fontSize: "11px", padding: "2px 6px", marginLeft: "8px", backgroundColor: "#fee2e2", color: "#b91c1c", border: "none", borderRadius: "4px", cursor: "pointer" };
+const deleteTxBtnStyle = { fontSize: "12px", padding: "4px 8px", marginLeft: "10px", backgroundColor: "#ef4444", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" };
+const addWalletStyle = { display: "flex", gap: "5px", marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #eee" };
+const fillWalletBtnStyle = { width: "100%", padding: "8px", marginBottom: "10px", backgroundColor: "#10b981", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" };
+
+const actionBtnStyle = (color, bg) => ({ fontSize: "11px", padding: "3px 6px", marginLeft: "4px", backgroundColor: bg, color: color, border: "none", borderRadius: "4px", cursor: "pointer" });
+const editInputNameStyle = { width: "120px", padding: "3px", fontSize: "13px", border: "1px solid #2563eb", borderRadius: "3px" };
+const addItemBtnStyle = { width: "100%", padding: "5px", marginTop: "5px", border: "1px dashed #aaa", borderRadius: "5px", background: "none", color: "#666", fontSize: "12px", cursor: "pointer" };
+
+const clickableAmountStyle = (color) => ({ color: color, fontWeight: "bold", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px" });
+const clickableNameStyle = { cursor: "pointer", borderBottom: "1px dotted #999" };
+const toggleBtnStyle = { width: "100%", padding: "10px", marginBottom: "15px", backgroundColor: "#f3f4f6", color: "#374151", border: "1px solid #e5e7eb", borderRadius: "8px", fontWeight: "bold", cursor: "pointer" };
+const listGroupStyle = { marginBottom: "15px", paddingBottom: "15px", borderBottom: "1px dashed #eee" };
+const listHeaderStyle = { fontSize: "14px", fontWeight: "bold", marginBottom: "8px", color: "#555" };
+const dashboardStyle = { display: "flex", justifyContent: "space-between", backgroundColor: "#f8fafc", padding: "15px", borderRadius: "12px", marginBottom: "20px", border: "1px solid #e2e8f0" };
+const dashItemStyle = { textAlign: "center", flex: 1 };
+const dashLabelStyle = { fontSize: "12px", color: "#64748b", marginBottom: "5px" };
+const dashValueStyle = (color) => ({ fontSize: "16px", fontWeight: "bold", color: color });
+
+const typeToggleContainer = { display: "flex", gap: "10px", marginBottom: "10px" };
+const typeBtnStyle = (isActive, type) => ({
+  flex: 1, padding: "10px", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer",
+  backgroundColor: isActive ? (type === "income" ? "#eff6ff" : "#fef2f2") : "#f3f4f6",
+  color: isActive ? (type === "income" ? "#2563eb" : "#ef4444") : "#9ca3af",
+  border: isActive ? (type === "income" ? "2px solid #2563eb" : "2px solid #ef4444") : "2px solid transparent"
+});
+
+const modalOverlayStyle = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 };
+const modalContentStyle = { backgroundColor: "white", padding: "25px", borderRadius: "15px", width: "90%", maxWidth: "400px", boxShadow: "0 4px 10px rgba(0,0,0,0.2)", position: "relative" };
+const closeBtnStyle = { position: "absolute", top: "15px", right: "15px", background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#999" };
+const backupBtnStyle = { fontSize: "12px", padding: "6px 12px", backgroundColor: "#475569", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", marginLeft: "10px" };
+const restoreBtnStyle = { fontSize: "12px", padding: "6px 12px", backgroundColor: "#cbd5e1", color: "#334155", border: "none", borderRadius: "6px", cursor: "pointer", marginLeft: "5px" };
+
+const EXPENSE_CATEGORIES = ["식비", "교통/차량", "쇼핑", "문화/여가", "생활/마트", "육아/교육", "경조사", "기타"];
+const INCOME_CATEGORIES = ["월급", "용돈", "보너스", "당근마켓", "기타수입"];
+const CATEGORY_COLORS = { "식비": "#f87171", "교통/차량": "#fb923c", "쇼핑": "#fbbf24", "문화/여가": "#a3e635", "생활/마트": "#34d399", "육아/교육": "#22d3ee", "경조사": "#818cf8", "기타": "#a78bfa" };
+
+
+function App() {
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`; 
+
+  const [activeTab, setActiveTab] = useState("calendar");
+
+  const [allData, setAllData] = useState(() => {
+    const saved = localStorage.getItem("myBudget_Ver2");
+    if (saved) return JSON.parse(saved);
+    return { wallets: INITIAL_DATA.wallets, months: { [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } };
+  });
+
+  const [transactions, setTransactions] = useState(() => {
+    const saved = localStorage.getItem("myBudget_Tx");
+    return saved ? JSON.parse(saved) : [];
+  });
+  
+  const todayStr = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
+
+  const [selectedDate, setSelectedDate] = useState(todayStr); 
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [txType, setTxType] = useState("expense"); 
+  const [inputCategory, setInputCategory] = useState("식비");
+  const [inputDesc, setInputDesc] = useState("");
+  const [inputAmount, setInputAmount] = useState("");
+  const [selectedWalletId, setSelectedWalletId] = useState(""); 
+  
+  const [newWalletName, setNewWalletName] = useState("");
+  const [newWalletBalance, setNewWalletBalance] = useState("");
+  const [showFixedList, setShowFixedList] = useState(false);
+  const [editingItemId, setEditingItemId] = useState(null); 
+  const [editingNameVal, setEditingNameVal] = useState(""); 
+  const [searchTerm, setSearchTerm] = useState("");
+
   const fileInputRef = useRef(null);
 
-  // Groups/Categories
-  const groups = model.groups || [];
-  const categories = useMemo(() => (model.categories || []).map((c) => ({ ...c, groupId: c.groupId || c.group || "salary", bankName: typeof c.bankName === "string" ? c.bankName : "" })), [model.categories]);
+  const currentMonthData = allData.months[monthKey] || { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses };
 
   useEffect(() => {
-    const ids = new Set(groups.map((g) => g.id));
-    if (mainTab !== "calendar" && !ids.has(mainTab)) setMainTab("calendar");
-  }, [groups, mainTab]);
+    if (!allData.months[monthKey]) {
+      setAllData(prev => ({ ...prev, months: { ...prev.months, [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } }));
+    }
+  }, [monthKey, allData.months]);
 
-  const updateGroup = (id, patch) => setModel((m) => ({ ...m, groups: m.groups.map((g) => (g.id === id ? { ...g, ...patch } : g)) }));
-  const addGroup = () => {
-    const name = prompt("새 메인 탭 이름 (예: 비상금통장)"); if (!name) return;
-    const isSalary = confirm("이 그룹을 '월급 그룹'으로 설정할까요?");
-    const id = `grp_${Date.now().toString(36)}`;
-    setModel((m) => ({ ...m, groups: [...m.groups, { id, name, type: isSalary ? "salary" : "generic", pool: 0 }], categories: [...m.categories, { id: MAIN_CAT_ID(id), name: `${name} (메인)`, amount: 0, groupId: id, isMain: true, bankName: "" }] }));
-    setMainTab(id);
+  useEffect(() => {
+    if (!selectedWalletId && allData.wallets.length > 0) {
+      setSelectedWalletId(allData.wallets[0].id);
+    }
+  }, [allData.wallets, selectedWalletId]);
+
+  useEffect(() => { localStorage.setItem("myBudget_Ver2", JSON.stringify(allData)); }, [allData]);
+  useEffect(() => { localStorage.setItem("myBudget_Tx", JSON.stringify(transactions)); }, [transactions]);
+
+  const handlePrevMonth = () => {
+    let newYear = year; let newMonth = month - 1;
+    if (newMonth < 1) { newMonth = 12; newYear -= 1; }
+    setYear(newYear); setMonth(newMonth);
+    setSelectedDate(`${newYear}-${String(newMonth).padStart(2, "0")}-01`);
+    setEditingItemId(null); 
   };
-  const renameGroup = (id) => {
-    const g = groups.find((x) => x.id === id);
-    const name = prompt("그룹 이름 변경", g?.name || ""); if (!name) return;
-    updateGroup(id, { name });
-    setModel((m) => ({ ...m, categories: (m.categories || []).map((c) => c.id === MAIN_CAT_ID(id) ? { ...c, name: `${name} (메인)` } : c) }));
+
+  const handleNextMonth = () => {
+    let newYear = year; let newMonth = month + 1;
+    if (newMonth > 12) { newMonth = 1; newYear += 1; }
+    setYear(newYear); setMonth(newMonth);
+    setSelectedDate(`${newYear}-${String(newMonth).padStart(2, "0")}-01`);
+    setEditingItemId(null);
   };
-  const toggleGroupType = (id) => {
-    const g = groups.find((x) => x.id === id); if (!g) return;
-    updateGroup(id, { type: g.type === "salary" ? "generic" : "salary" });
+
+  const handleDateClick = (date) => {
+    setSelectedDate(date);
+    setIsModalOpen(true); 
+    setInputDesc(""); setInputAmount(""); setTxType("expense"); 
+    setInputCategory("식비");
   };
-  const deleteGroup = (id) => {
-    const hasCats = categories.some((c) => c.groupId === id && !c.isMain);
-    if (!confirm(hasCats ? "이 그룹의 통장/기록까지 모두 삭제할까요?" : "그룹을 삭제할까요?")) return;
-    setModel((m) => {
-      const mainId = MAIN_CAT_ID(id);
-      return {
-        ...m,
-        groups: m.groups.filter((g) => g.id !== id),
-        categories: m.categories.filter((c) => c.groupId !== id),
-        entries: Object.fromEntries(Object.entries(m.entries || {}).filter(([catId]) => catId !== mainId && !(m.categories || []).some((c) => c.id === catId && c.groupId === id))),
-      };
+
+  const handleFillWallets = () => {
+    if (!window.confirm("지갑 잔액을 설정된 예산 금액으로 초기화하시겠습니까?")) return;
+    const resetWallets = allData.wallets.map(w => {
+       const initialW = INITIAL_DATA.wallets.find(iw => iw.id === w.id);
+       if (initialW) { return { ...w, balance: initialW.balance }; }
+       return w;
     });
-    setMainTab("calendar");
+    setAllData(prev => ({ ...prev, wallets: resetWallets }));
+    alert("지갑 잔액이 예산 금액으로 채워졌습니다!");
   };
 
-  // Categories & entries
-  const ROWS_PER_PAGE = 6;
-  const [allocPageByGroup, setAllocPageByGroup] = useState({});
-  const getAllocPage = (gid) => allocPageByGroup[gid] || 1;
-  const setAllocPage = (gid, page) => setAllocPageByGroup((p) => ({ ...p, [gid]: page }));
-
-  const addCategoryRow = (groupId) => {
-    const name = prompt("새 통장 이름", "새 통장"); if (!name) return;
-    const bankName = prompt("은행 이름(선택)", "") || "";
-    const id = `cat_${Date.now().toString(36)}`;
-    setModel((m) => ({ ...m, categories: [...m.categories, { id, name, amount: 0, groupId, isMain: false, bankName }] }));
-    const count = categories.filter((c) => c.groupId === groupId && !c.isMain).length + 1;
-    const last = Math.max(1, Math.ceil(count / ROWS_PER_PAGE));
-    setAllocPage(groupId, last);
-  };
-  const updateCategory = (id, field, value) => {
-    if (id === "__GROUP__" && field === "pool" && value?.groupId) {
-      return setModel((m) => ({ ...m, groups: m.groups.map((g) => (g.id === value.groupId ? { ...g, pool: value.value } : g)) }));
-    }
-    setModel((m) => ({ ...m, categories: m.categories.map((c) => (c.id === id ? { ...c, [field]: field === "amount" ? Number(value) || 0 : value } : c)) }));
-  };
-  const deleteCategoryRow = (id) => {
-    const cat = categories.find((c) => c.id === id);
-    if (cat?.isMain) return alert("메인 통장은 삭제할 수 없습니다.");
-    const hasEntries = (model.entries?.[id] || []).length > 0;
-    if (!confirm(hasEntries ? "이 통장에 기록이 있습니다. 삭제할까요?" : "삭제할까요?")) return;
-    setModel((m) => ({ ...m, categories: m.categories.filter((c) => c.id !== id), entries: Object.fromEntries(Object.entries(m.entries || {}).filter(([k]) => k !== id)) }));
-  };
-  const addEntry = (catId, entry) => setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: [...(m.entries?.[catId] || []), entry] } }));
-  const removeEntry = (catId, idx) => setModel((m) => ({ ...m, entries: { ...m.entries, [catId]: (m.entries?.[catId] || []).filter((_, i) => i !== idx) } }));
-
-  const activeGroup = groups.find((g) => g.id === mainTab);
-  const catsOfActive = (model.categories || []).filter((c) => c.groupId === activeGroup?.id);
-  const catsForAlloc = catsOfActive.filter((c) => !c.isMain);
-
-  const totalPages = Math.max(1, Math.ceil(catsForAlloc.length / ROWS_PER_PAGE));
-  const currentPage = activeGroup ? Math.min(getAllocPage(activeGroup.id), totalPages) : 1;
-  const startIdx = (currentPage - 1) * ROWS_PER_PAGE;
-  const endIdx = startIdx + ROWS_PER_PAGE;
-
-  // Backup/Restore
-  const handleExportAll = () => {
-    const payload = makeBackupPayload();
-    const filename = `budget-backup-${new Date().toISOString().replaceAll(":", "-")}.json`;
-    downloadTextFile(filename, JSON.stringify(payload, null, 2));
-  };
-  const openImportDialog = () => fileInputRef.current?.click();
-  const onImportFileSelected = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const obj = JSON.parse(text);
-      const result = await restoreFromBackupObject(obj, { askBeforeOverwrite: true });
-      if (result) {
-        alert(`복원 완료! 총 ${result.total}개 중 ${result.overwritten}개 덮어씀.`);
-        setModel((prev) => {
-          try { const raw = localStorage.getItem(`budget-${ym}`); return raw ? JSON.parse(raw) : prev; }
-          catch { return prev; }
-        });
+  const handleAddTransaction = () => {
+    if (!inputDesc || !inputAmount) return alert("내용과 금액을 입력해주세요!");
+    if (!selectedWalletId) return alert("통장을 선택해주세요!");
+    const amount = Number(inputAmount);
+    const newTx = { 
+      id: Date.now(), date: selectedDate, desc: inputDesc, amount: amount, walletId: selectedWalletId, type: txType, category: inputCategory
+    };
+    setTransactions([...transactions, newTx]);
+    const updatedWallets = allData.wallets.map(wallet => {
+      if (wallet.id === selectedWalletId) {
+        if (txType === 'income') return { ...wallet, balance: wallet.balance + amount };
+        else return { ...wallet, balance: wallet.balance - amount };
       }
-    } catch {
-      alert("백업 파일을 읽는 중 오류가 발생했습니다.");
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+      return wallet;
+    });
+    setAllData(prev => ({ ...prev, wallets: updatedWallets }));
+    setIsModalOpen(false); setInputDesc(""); setInputAmount("");
   };
 
-  const resetAll = () => {
-    if (!confirm(`${ym} 데이터를 모두 초기화할까요?`)) return;
-    setModel({ month: ym, groups: DEFAULT_GROUPS.map((g)=>({...g})), categories: [...DEFAULT_GROUPS.map((g)=>({ id: MAIN_CAT_ID(g.id), name: `${g.name} (메인)`, amount:0, groupId:g.id, isMain:true, bankName:""})), ...DEFAULT_CATEGORIES.map((c)=>({...c,isMain:false}))], entries:{} });
-    setSelectedDate(`${ym}-01`);
-    setMainTab("calendar");
+  const handleDeleteTransaction = (txId) => {
+    const targetTx = transactions.find(tx => tx.id === txId);
+    if (!targetTx) return;
+    if (!window.confirm("이 내역을 삭제하시겠습니까?")) return;
+    const filtered = transactions.filter(tx => tx.id !== txId);
+    setTransactions(filtered);
+    const updatedWallets = allData.wallets.map(wallet => {
+      if (wallet.id === targetTx.walletId) {
+        if (targetTx.type === 'income') return { ...wallet, balance: wallet.balance - targetTx.amount };
+        else return { ...wallet, balance: wallet.balance + targetTx.amount };
+      }
+      return wallet;
+    });
+    setAllData(prev => ({ ...prev, wallets: updatedWallets }));
   };
 
-  // re-run automations when month changes
-  useEffect(() => { setModel((m) => applyAutomations(m, ym)); }, [ym]);
+  const monthlyStats = useMemo(() => {
+    const totalFixedIncome = currentMonthData.income.total;
+    const totalFixedExpense = currentMonthData.fixedExpenses.autoTransfers.reduce((s, i) => s + i.amount, 0) + 
+                              currentMonthData.fixedExpenses.cardBills.reduce((s, i) => s + i.amount, 0);
+    const monthTxs = transactions.filter(tx => tx.date.startsWith(monthKey));
+    const variableIncome = monthTxs.filter(tx => tx.type === 'income').reduce((s, tx) => s + tx.amount, 0);
+    const variableExpense = monthTxs.filter(tx => !tx.type || tx.type === 'expense').reduce((s, tx) => s + tx.amount, 0);
+    const totalIncome = totalFixedIncome + variableIncome;
+    const totalExpense = totalFixedExpense + variableExpense;
+    const balance = totalIncome - totalExpense;
+    
+    const catStats = {};
+    monthTxs.filter(tx => !tx.type || tx.type === 'expense').forEach(tx => {
+      const cat = tx.category || "기타";
+      catStats[cat] = (catStats[cat] || 0) + tx.amount;
+    });
+    const sortedCatStats = Object.entries(catStats).sort((a, b) => b[1] - a[1]);
 
-  return (
-    <div className="min-h-screen w-full bg-slate-50 text-slate-800">
-      <header className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-4 py-4 space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <h1 className="text-xl sm:text-2xl font-bold">{ym} 가계부</h1>
-            <div className="flex flex-wrap items-center gap-2">
-              <button onClick={handleExportAll} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">백업 저장(내보내기)</button>
-              <button onClick={openImportDialog} className="px-3 py-1.5 rounded-xl text-sm bg-amber-100 text-amber-900 hover:bg-amber-200">백업 불러오기(복원)</button>
-              <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={onImportFileSelected} />
-              <button onClick={resetAll} className="px-3 py-1.5 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">초기화</button>
-            </div>
+    return { totalIncome, totalExpense, balance, sortedCatStats, variableExpense };
+  }, [currentMonthData, transactions, monthKey]);
+
+  const dailyInfo = useMemo(() => {
+    const info = {};
+    const yStr = year; const mStr = String(month).padStart(2, "0");
+    const mData = currentMonthData;
+    const payday = `${yStr}-${mStr}-25`;
+    if (!info[payday]) info[payday] = 0; info[payday] += mData.income.total;
+    const transferDay = `${yStr}-${mStr}-26`;
+    if (!info[transferDay]) info[transferDay] = 0; 
+    const totalAutoTransfer = mData.fixedExpenses.autoTransfers.reduce((sum, item) => sum + item.amount, 0);
+    info[transferDay] -= totalAutoTransfer;
+    const cardDay = `${yStr}-${mStr}-15`;
+    if (!info[cardDay]) info[cardDay] = 0;
+    const totalCard = mData.fixedExpenses.cardBills.reduce((sum, item) => sum + item.amount, 0);
+    info[cardDay] -= totalCard;
+
+    transactions.forEach(tx => {
+      if (!info[tx.date]) info[tx.date] = 0;
+      if (tx.type === 'income') info[tx.date] += tx.amount;
+      else info[tx.date] -= tx.amount;
+    });
+    return info;
+  }, [transactions, currentMonthData, year, month]);
+
+  const handleEditAmount = (type, category, id, currentVal, name) => {
+    const inputVal = window.prompt(`[${name}]의 수정할 금액을 입력하세요:`, currentVal);
+    if (inputVal === null || inputVal.trim() === "") return;
+    const newAmount = Number(inputVal); if (isNaN(newAmount)) return alert("숫자만 입력해주세요.");
+    setAllData(prev => {
+      const prevMonthData = prev.months[monthKey] || currentMonthData;
+      let updatedMonthData = { ...prevMonthData };
+      if (type === "income") {
+        const updatedItems = prevMonthData.income.items.map(item => item.id === id ? { ...item, amount: newAmount } : item);
+        updatedMonthData.income = { ...prevMonthData.income, items: updatedItems, total: updatedItems.reduce((s, i) => s + i.amount, 0) };
+      } else {
+        const updatedList = prevMonthData.fixedExpenses[category].map(item => item.id === id ? { ...item, amount: newAmount } : item);
+        updatedMonthData.fixedExpenses = { ...prevMonthData.fixedExpenses, [category]: updatedList };
+      }
+      return { ...prev, months: { ...prev.months, [monthKey]: updatedMonthData } };
+    });
+  };
+  const startEditingName = (id, currentName) => { setEditingItemId(id); setEditingNameVal(currentName); };
+  const saveEditingName = (type, category, id) => {
+    if (!editingNameVal.trim()) return alert("이름을 입력해주세요.");
+    setAllData(prev => {
+      const prevMonthData = prev.months[monthKey] || currentMonthData;
+      let updatedMonthData = { ...prevMonthData };
+      if (type === "income") {
+        const updatedItems = prevMonthData.income.items.map(item => item.id === id ? { ...item, name: editingNameVal } : item);
+        updatedMonthData.income = { ...prevMonthData.income, items: updatedItems };
+      } else {
+        const updatedList = prevMonthData.fixedExpenses[category].map(item => item.id === id ? { ...item, name: editingNameVal } : item);
+        updatedMonthData.fixedExpenses = { ...prevMonthData.fixedExpenses, [category]: updatedList };
+      }
+      return { ...prev, months: { ...prev.months, [monthKey]: updatedMonthData } };
+    });
+    setEditingItemId(null);
+  };
+  const handleDeleteFixedItem = (type, category, id) => {
+    if (!window.confirm("정말 삭제하시겠습니까?")) return;
+    setAllData(prev => {
+      const prevMonthData = prev.months[monthKey] || currentMonthData;
+      let updatedMonthData = { ...prevMonthData };
+      if (type === "income") {
+        const filteredItems = prevMonthData.income.items.filter(item => item.id !== id);
+        updatedMonthData.income = { ...prevMonthData.income, items: filteredItems, total: filteredItems.reduce((s, i) => s + i.amount, 0) };
+      } else {
+        const filteredList = prevMonthData.fixedExpenses[category].filter(item => item.id !== id);
+        updatedMonthData.fixedExpenses = { ...prevMonthData.fixedExpenses, [category]: filteredList };
+      }
+      return { ...prev, months: { ...prev.months, [monthKey]: updatedMonthData } };
+    });
+  };
+  const handleAddFixedItem = (type, category) => {
+    const name = window.prompt("추가할 항목의 이름을 입력하세요:"); if (!name) return;
+    const amountStr = window.prompt("금액을 입력하세요:", "0"); const amount = Number(amountStr); if (isNaN(amount)) return alert("숫자여야 합니다.");
+    const newItem = { id: `added_${Date.now()}`, name, amount, desc: "추가됨" };
+    setAllData(prev => {
+      const prevMonthData = prev.months[monthKey] || currentMonthData;
+      let updatedMonthData = { ...prevMonthData };
+      if (type === "income") {
+        const newItems = [...prevMonthData.income.items, newItem];
+        updatedMonthData.income = { ...prevMonthData.income, items: newItems, total: newItems.reduce((s, i) => s + i.amount, 0) };
+      } else {
+        const newList = [...prevMonthData.fixedExpenses[category], newItem];
+        updatedMonthData.fixedExpenses = { ...prevMonthData.fixedExpenses, [category]: newList };
+      }
+      return { ...prev, months: { ...prev.months, [monthKey]: updatedMonthData } };
+    });
+  };
+  const handleAddWallet = () => { if (!newWalletName) return alert("이름 입력!"); const initialBalance = Number(newWalletBalance) || 0; const newWallet = { id: `w_${Date.now()}`, name: newWalletName, balance: initialBalance, type: "cash" }; setAllData(prev => ({ ...prev, wallets: [...prev.wallets, newWallet] })); setNewWalletName(""); setNewWalletBalance(""); };
+  const handleDeleteWallet = (id, name) => { if (window.confirm(`[${name}] 통장 삭제?`)) { setAllData(prev => ({ ...prev, wallets: prev.wallets.filter(w => w.id !== id) })); if (selectedWalletId === id) setSelectedWalletId(""); } };
+  const handleReset = () => { if (window.confirm("초기화?")) { localStorage.removeItem("myBudget_Ver2"); localStorage.removeItem("myBudget_Tx"); window.location.reload(); } };
+  const handleExport = () => { const backupData = { allData: allData, transactions: transactions, date: new Date().toISOString() }; const jsonString = JSON.stringify(backupData, null, 2); const blob = new Blob([jsonString], { type: "application/json" }); const href = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = href; const dateStr = new Date().toISOString().split('T')[0]; link.download = `가계부백업_${dateStr}.json`; document.body.appendChild(link); link.click(); document.body.removeChild(link); };
+  const handleImportClick = () => { fileInputRef.current.click(); };
+  const handleFileChange = (e) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (event) => { try { const parsed = JSON.parse(event.target.result); if (!parsed.allData || !parsed.transactions) { alert("올바른 파일 아님"); return; } if (window.confirm("복원하시겠습니까?")) { setAllData(parsed.allData); setTransactions(parsed.transactions); alert("복원 완료!"); } } catch (err) { alert("오류 발생"); } }; reader.readAsText(file); e.target.value = ""; };
+
+  const getFixedEvents = (dateStr) => {
+    if (!dateStr) return [];
+    const parts = dateStr.split("-"); if (parts.length < 3) return [];
+    const day = Number(parts[2]);
+    const events = []; const mData = currentMonthData;
+    if (day === 25) events.push({ type: "income", name: "💰 월급날", amount: mData.income.total, items: mData.income.items });
+    if (day === 26) events.push({ type: "expense", name: "🏦 자동이체 나가는 날", amount: mData.fixedExpenses.autoTransfers.reduce((a, b) => a + b.amount, 0), items: mData.fixedExpenses.autoTransfers });
+    if (day === 15) events.push({ type: "expense", name: "💳 카드값/공과금 내는 날", amount: mData.fixedExpenses.cardBills.reduce((a, b) => a + b.amount, 0), items: mData.fixedExpenses.cardBills });
+    return events;
+  };
+
+  const selectedFixedEvents = getFixedEvents(selectedDate);
+
+  const RenderListItem = ({ item, type, category }) => {
+    const isEditing = editingItemId === item.id;
+    if (isEditing) {
+      return (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", backgroundColor: "#fff9c4", padding: "4px", borderRadius: "4px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+            <input value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} style={editInputNameStyle} autoFocus />
           </div>
-
-          <div className="flex items-center gap-2">
-            <button onClick={() => setYM(shiftYM(ym, -1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">◀ 이전달</button>
-            <div className="px-4 py-1.5 rounded-xl bg-white border text-slate-700">{ym}</div>
-            <button onClick={() => setYM(shiftYM(ym, 1))} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200">다음달 ▶</button>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <button onClick={() => setMainTab("calendar")} className={`px-4 py-2 rounded-xl text-sm ${mainTab === "calendar" ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`}>달력</button>
-            {groups.map((g) => (
-              <button key={g.id} onClick={() => setMainTab(g.id)} className={`px-4 py-2 rounded-xl text-sm ${mainTab === g.id ? "bg-indigo-600 text-white" : "bg-slate-100 hover:bg-slate-200"}`} title={g.type === "salary" ? "월급 그룹" : "일반 그룹"}>{g.name}</button>
-            ))}
-            <button onClick={addGroup} className="px-3 py-2 rounded-xl text-sm bg-emerald-100 text-emerald-800 hover:bg-emerald-200">+ 그룹 추가</button>
-            {activeGroup && mainTab !== "calendar" && (
-              <>
-                <button onClick={() => renameGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">이름변경</button>
-                <button onClick={() => toggleGroupType(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200">{activeGroup.type === "salary" ? "일반 그룹으로 변경" : "월급 그룹으로 지정"}</button>
-                <button onClick={() => deleteGroup(activeGroup.id)} className="px-3 py-2 rounded-xl text-sm bg-red-100 text-red-700 hover:bg-red-200">그룹 삭제</button>
-              </>
-            )}
+          <div style={{ display: "flex", gap: "2px" }}>
+            <button onClick={() => saveEditingName(type, category, item.id)} style={actionBtnStyle("white", "#10b981")}>저장</button>
+            <button onClick={() => handleDeleteFixedItem(type, category, item.id)} style={actionBtnStyle("white", "#ef4444")}>삭제</button>
+            <button onClick={() => setEditingItemId(null)} style={actionBtnStyle("#555", "#e5e7eb")}>취소</button>
           </div>
         </div>
-      </header>
+      );
+    }
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px", alignItems: "center" }}>
+        <span onClick={() => startEditingName(item.id, item.name)} style={clickableNameStyle}>{item.name}</span>
+        <span onClick={() => handleEditAmount(type, category, item.id, item.amount, item.name)} style={clickableAmountStyle(type === "income" ? "blue" : "red")}>
+          {type === "income" ? "+" : "-"}{item.amount.toLocaleString()}
+        </span>
+      </div>
+    );
+  };
 
-      {mainTab === "calendar" ? (
-        <CalendarPage
-          ym={ym}
-          selectedDate={selectedDate}
-          setSelectedDate={setSelectedDate}
-          categories={categories}
-          entries={model.entries}
-          addEntry={addEntry}
-          removeEntry={removeEntry}
-        />
-      ) : (
-        <GroupPage
-          activeGroup={activeGroup}
-          catsOfActive={categories.filter((c) => c.groupId === activeGroup?.id)}
-          catsForAlloc={categories.filter((c) => c.groupId === activeGroup?.id && !c.isMain)}
-          rowsPerPage={ROWS_PER_PAGE}
-          startIdx={startIdx}
-          endIdx={endIdx}
-          currentPage={currentPage}
-          totalPages={totalPages}
-          setAllocPage={setAllocPage}
-          addCategoryRow={addCategoryRow}
-          updateCategory={updateCategory}
-          deleteCategoryRow={deleteCategoryRow}
-          entries={model.entries}
-          addEntry={addEntry}
-          removeEntry={removeEntry}
-        />
+  // 1. 달력 뷰
+  const renderCalendarView = () => (
+    <>
+      <div style={dashboardStyle}>
+        <div style={dashItemStyle}><div style={dashLabelStyle}>총 수입</div><div style={dashValueStyle("blue")}>+{monthlyStats.totalIncome.toLocaleString()}</div></div>
+        <div style={{ width: "1px", backgroundColor: "#e2e8f0" }}></div>
+        <div style={dashItemStyle}><div style={dashLabelStyle}>총 지출</div><div style={dashValueStyle("red")}>-{monthlyStats.totalExpense.toLocaleString()}</div></div>
+        <div style={{ width: "1px", backgroundColor: "#e2e8f0" }}></div>
+        <div style={dashItemStyle}><div style={dashLabelStyle}>순수익</div><div style={dashValueStyle(monthlyStats.balance >= 0 ? "blue" : "red")}>{monthlyStats.balance >= 0 ? "+" : ""}{monthlyStats.balance.toLocaleString()}</div></div>
+      </div>
+
+      <button onClick={() => setShowFixedList(!showFixedList)} style={toggleBtnStyle}>{showFixedList ? "🔼 목록 접기" : "📋 고정 수입/지출 목록 관리"}</button>
+      {showFixedList && (
+        <div style={{ ...cardStyle, border: "2px solid #2563eb", backgroundColor: "#f0f9ff" }}>
+          <div style={listGroupStyle}>
+            <div style={listHeaderStyle}>💰 고정 수입 (25일)</div>
+            {currentMonthData.income.items.map(item => <RenderListItem key={item.id} item={item} type="income" category={null} />)}
+            <div style={{ textAlign: "right", fontWeight: "bold", marginTop: "5px", color: "blue" }}>합계: +{currentMonthData.income.total.toLocaleString()}원</div>
+            <button onClick={() => handleAddFixedItem("income", null)} style={addItemBtnStyle}>+ 수입 항목 추가</button>
+          </div>
+          <div style={listGroupStyle}>
+            <div style={listHeaderStyle}>🏦 자동이체 (26일)</div>
+            {currentMonthData.fixedExpenses.autoTransfers.map(item => <RenderListItem key={item.id} item={item} type="expense" category="autoTransfers" />)}
+            <div style={{ textAlign: "right", fontWeight: "bold", marginTop: "5px", color: "red" }}>합계: -{currentMonthData.fixedExpenses.autoTransfers.reduce((sum, item) => sum + item.amount, 0).toLocaleString()}원</div>
+            <button onClick={() => handleAddFixedItem("expense", "autoTransfers")} style={addItemBtnStyle}>+ 자동이체 항목 추가</button>
+          </div>
+          <div>
+            <div style={listHeaderStyle}>💳 카드/공과금 (15일)</div>
+            {currentMonthData.fixedExpenses.cardBills.map(item => <RenderListItem key={item.id} item={item} type="expense" category="cardBills" />)}
+            <div style={{ textAlign: "right", fontWeight: "bold", marginTop: "5px", color: "red" }}>합계: -{currentMonthData.fixedExpenses.cardBills.reduce((sum, item) => sum + item.amount, 0).toLocaleString()}원</div>
+            <button onClick={() => handleAddFixedItem("expense", "cardBills")} style={addItemBtnStyle}>+ 카드/공과금 항목 추가</button>
+          </div>
+        </div>
+      )}
+
+      <div style={cardStyle}>
+        <SimpleCalendar year={year} month={month} selectedDate={selectedDate} onDateClick={handleDateClick} dailyAmounts={dailyInfo} />
+      </div>
+      
+      {selectedFixedEvents.length > 0 && (
+        <div style={{ ...cardStyle, border: "2px solid #ddd", backgroundColor: "#f9fafb" }}>
+          <div style={titleStyle}>📌 {selectedDate} 고정 일정</div>
+          {selectedFixedEvents.map((evt, idx) => (
+            <div key={idx} style={{marginBottom:"10px"}}>
+              <div style={{ marginBottom: "5px", fontSize: "16px", fontWeight: "bold", color: evt.type === "income" ? "blue" : "red" }}>{evt.name} ({evt.type === "income" ? "+" : "-"}{evt.amount.toLocaleString()}원)</div>
+              <div style={{ fontSize: "13px", color: "#555", backgroundColor: "#eee", padding: "10px", borderRadius: "8px" }}>
+                {evt.items.map(item => <div key={item.id} style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}><span>{item.name}</span><span>{item.amount.toLocaleString()}</span></div>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {transactions.filter(tx => tx.date === selectedDate).length > 0 && (
+        <div style={cardStyle}>
+          <div style={titleStyle}>📝 {selectedDate} 내역</div>
+          {transactions.filter(tx => tx.date === selectedDate).map(tx => (
+            <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:"bold"}}>{tx.desc}</div>
+                <div style={{fontSize:"11px", color:"#666"}}>{tx.category || "기타"} | {allData.wallets.find(w=>w.id===tx.walletId)?.name || "삭제된통장"}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <span style={{ color: tx.type === 'income' ? "blue" : "red", fontWeight: "bold", display:"block" }}>
+                  {tx.type === 'income' ? "+" : "-"}{tx.amount.toLocaleString()}원
+                </span>
+                <button onClick={() => handleDeleteTransaction(tx.id)} style={deleteTxBtnStyle}>삭제</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={cardStyle}>
+        <div style={titleStyle}>👛 지갑 잔액 현황</div>
+        <button onClick={handleFillWallets} style={fillWalletBtnStyle}>🔄 예산대로 지갑 잔액 채우기</button>
+        <div style={{ marginBottom: "15px" }}>
+          {allData.wallets.map(w => (
+            <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
+              <div><span>{w.name}</span><button onClick={() => handleDeleteWallet(w.id, w.name)} style={smallBtnStyle}>삭제</button></div>
+              <span style={{ fontWeight: "bold", color: w.balance < 0 ? "red" : "black" }}>{w.balance.toLocaleString()}원</span>
+            </div>
+          ))}
+        </div>
+        <div style={addWalletStyle}>
+          <input type="text" placeholder="새 통장 이름" style={{ ...inputStyle, marginBottom: 0, flex: 2 }} value={newWalletName} onChange={(e) => setNewWalletName(e.target.value)} />
+          <input type="number" placeholder="초기 잔액" style={{ ...inputStyle, marginBottom: 0, flex: 1 }} value={newWalletBalance} onChange={(e) => setNewWalletBalance(e.target.value)} />
+          <button onClick={handleAddWallet} style={{ ...btnStyle, width: "auto", padding: "0 15px", backgroundColor: "#10b981", marginBottom: 0 }}>추가</button>
+        </div>
+      </div>
+    </>
+  );
+
+  // 2. 리스트 뷰
+  const renderListView = () => {
+    const filteredTxs = transactions.filter(tx => 
+      tx.desc.includes(searchTerm) || (tx.category && tx.category.includes(searchTerm)) || String(tx.amount).includes(searchTerm)
+    ).sort((a,b) => b.date.localeCompare(a.date));
+
+    return (
+      <div style={cardStyle}>
+        <div style={titleStyle}>🔍 전체 내역 검색</div>
+        <input type="text" placeholder="검색어 입력 (예: 커피, 식비, 5000)" style={inputStyle} value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+        <div style={{maxHeight: "60vh", overflowY: "auto"}}>
+          {filteredTxs.length === 0 ? <div style={{textAlign:"center", color:"#999", padding:"20px"}}>내역이 없습니다.</div> : 
+            filteredTxs.map(tx => (
+              <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+                <div style={{fontSize:"12px", color:"#888", width:"80px"}}>{tx.date}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:"bold"}}>{tx.desc}</div>
+                  <div style={{fontSize:"11px", color:"#666", backgroundColor:"#f3f4f6", display:"inline-block", padding:"2px 4px", borderRadius:"4px"}}>{tx.category || "기타"}</div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{ color: tx.type === 'income' ? "blue" : "red", fontWeight: "bold" }}>
+                    {tx.type === 'income' ? "+" : "-"}{tx.amount.toLocaleString()}
+                  </div>
+                  <button onClick={() => handleDeleteTransaction(tx.id)} style={{...deleteTxBtnStyle, marginTop:"2px"}}>삭제</button>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    );
+  };
+
+  // 3. 통계 뷰
+  const renderStatsView = () => {
+    const { sortedCatStats, variableExpense } = monthlyStats;
+    return (
+      <div style={cardStyle}>
+        <div style={titleStyle}>{month}월 지출 통계 (변동지출)</div>
+        <div style={{marginBottom:"20px", textAlign:"center", fontSize:"20px", fontWeight:"bold", color:"#333"}}>총 {variableExpense.toLocaleString()}원</div>
+        {sortedCatStats.length === 0 ? <div style={{textAlign:"center", color:"#999"}}>지출 내역이 없습니다.</div> :
+          sortedCatStats.map(([cat, amount]) => {
+            const percentage = variableExpense === 0 ? 0 : Math.round((amount / variableExpense) * 100);
+            return (
+              <div key={cat} style={{marginBottom:"15px"}}>
+                <div style={{display:"flex", justifyContent:"space-between", marginBottom:"5px", fontSize:"13px"}}>
+                  <span style={{fontWeight:"bold"}}>{cat}</span>
+                  <span>{amount.toLocaleString()}원 ({percentage}%)</span>
+                </div>
+                <div style={{width:"100%", height:"10px", backgroundColor:"#f3f4f6", borderRadius:"4px", overflow:"hidden"}}>
+                  <div style={chartBarStyle(`${percentage}%`, CATEGORY_COLORS[cat] || "#ccc")}></div>
+                </div>
+              </div>
+            )
+          })
+        }
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ backgroundColor: "#f5f7fa", minHeight: "100vh" }}>
+      <div style={containerStyle}>
+        
+        {/* 상단바 */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+          <h2 style={{ fontSize: "18px", margin: 0 }}>My 가계부</h2>
+          <div>
+            <button onClick={handleExport} style={backupBtnStyle}>💾 백업</button>
+            <button onClick={handleImportClick} style={restoreBtnStyle}>📂 복원</button>
+            <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileChange} accept="application/json" />
+          </div>
+        </div>
+
+        {activeTab !== 'list' && (
+          <div style={headerStyle}>
+            <button onClick={handlePrevMonth} style={navBtnStyle}>◀</button>
+            <h2 style={{ margin: 0 }}>{year}년 {month}월</h2>
+            <button onClick={handleNextMonth} style={navBtnStyle}>▶</button>
+          </div>
+        )}
+        <div style={{ textAlign: "right", marginBottom: "10px" }}><button onClick={handleReset} style={resetBtnStyle}>초기화</button></div>
+
+        {activeTab === 'calendar' && renderCalendarView()}
+        {activeTab === 'list' && renderListView()}
+        {activeTab === 'stats' && renderStatsView()}
+
+      </div>
+
+      <div style={bottomNavStyle}>
+        <div style={bottomNavItemStyle(activeTab === 'calendar')} onClick={() => setActiveTab('calendar')}>📅 달력</div>
+        <div style={bottomNavItemStyle(activeTab === 'list')} onClick={() => setActiveTab('list')}>🔍 리스트</div>
+        <div style={bottomNavItemStyle(activeTab === 'stats')} onClick={() => setActiveTab('stats')}>📊 통계</div>
+      </div>
+
+      {isModalOpen && (
+        <div style={modalOverlayStyle} onClick={() => setIsModalOpen(false)}>
+          <div style={modalContentStyle} onClick={(e) => e.stopPropagation()}>
+            <button style={closeBtnStyle} onClick={() => setIsModalOpen(false)}>✕</button>
+            <div style={titleStyle}>{selectedDate} 기록</div>
+            <div style={typeToggleContainer}>
+              <button onClick={() => setTxType("expense")} style={typeBtnStyle(txType === "expense", "expense")}>🔴 지출 (-)</button>
+              <button onClick={() => setTxType("income")} style={typeBtnStyle(txType === "income", "income")}>🔵 수입 (+)</button>
+            </div>
+            <div style={{marginBottom:"10px"}}>
+              <label style={{fontSize:"12px", color:"#666", marginBottom:"4px", display:"block"}}>카테고리</label>
+              <select style={inputStyle} value={inputCategory} onChange={(e) => setInputCategory(e.target.value)}>
+                {(txType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(cat => <option key={cat} value={cat}>{cat}</option>)}
+              </select>
+            </div>
+            <input type="text" placeholder="내용 (예: 커피)" style={inputStyle} value={inputDesc} onChange={(e) => setInputDesc(e.target.value)} autoFocus />
+            <input type="number" placeholder="금액 (원)" style={inputStyle} value={inputAmount} onChange={(e) => setInputAmount(e.target.value)} />
+            <select style={inputStyle} value={selectedWalletId} onChange={(e) => setSelectedWalletId(e.target.value)}>
+              <option value="" disabled>어느 통장인가요?</option>
+              {allData.wallets.map(wallet => <option key={wallet.id} value={wallet.id}>{wallet.name} (잔액: {wallet.balance.toLocaleString()}원)</option>)}
+            </select>
+            <button onClick={handleAddTransaction} style={btnStyle}>저장하기</button>
+          </div>
+        </div>
       )}
     </div>
   );
 }
+
+export default App;
