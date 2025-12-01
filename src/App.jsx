@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { INITIAL_DATA } from "./data/initialData";
 import SimpleCalendar from "./components/SimpleCalendar"; 
-import { db } from "./firebase"; // 방금 만든 firebase.js 불러오기
+import { db } from "./fbase"; 
 import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 // --- 스타일 정의 ---
@@ -48,8 +48,14 @@ const dashLabelStyle = { fontSize: "12px", color: "#64748b", marginBottom: "5px"
 const dashValueStyle = (color) => ({ fontSize: "16px", fontWeight: "bold", color: color });
 
 const typeToggleContainer = { display: "flex", gap: "10px", marginBottom: "10px" };
+
+// [수정된 부분] 중복된 border 속성을 완전히 제거했습니다.
 const typeBtnStyle = (isActive, type) => ({
-  flex: 1, padding: "10px", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer",
+  flex: 1, 
+  padding: "10px", 
+  borderRadius: "8px", 
+  fontWeight: "bold", 
+  cursor: "pointer",
   backgroundColor: isActive ? (type === "income" ? "#eff6ff" : "#fef2f2") : "#f3f4f6",
   color: isActive ? (type === "income" ? "#2563eb" : "#ef4444") : "#9ca3af",
   border: isActive ? (type === "income" ? "2px solid #2563eb" : "2px solid #ef4444") : "2px solid transparent"
@@ -127,13 +133,10 @@ function App() {
   }, []);
 
   // --- 🔥 Firebase 저장 함수 ---
-  // 로컬 스테이트만 바꾸는 게 아니라, DB에 쏴주는 함수
   const saveToFirebase = async (newAllData, newTransactions) => {
-    // 1. 즉시 로컬 반영 (빠른 반응속도)
     if(newAllData) setAllData(newAllData);
     if(newTransactions) setTransactions(newTransactions);
 
-    // 2. 클라우드 전송
     try {
       const docRef = doc(db, "budget", DOC_ID);
       await updateDoc(docRef, {
@@ -381,19 +384,9 @@ function App() {
     } 
   };
 
-  // Firebase 버전에서는 백업/복원이 필요 없지만(자동저장됨), 혹시 몰라 남겨둠
-  const handleExport = () => { alert("현재는 자동 저장 모드입니다. 별도 백업이 필요 없습니다! (데이터는 안전하게 구글 서버에 있어요)"); };
-  const handleImportClick = () => { alert("현재는 자동 저장 모드입니다."); };
-  const handleFileChange = () => {};
-
   if (isLoading) return <div style={{display:"flex",justifyContent:"center",alignItems:"center",height:"100vh"}}>로딩중...</div>;
 
   // ... 렌더링 로직 (기존과 거의 동일) ...
-  // ... (View Functions: renderCalendarView, renderListView, renderStatsView) ...
-  // [여기서부터는 UI 코드입니다. 분량상 위에서 작성한 render 함수들을 그대로 씁니다.]
-  // [실제 적용시에는 위 코드의 return 문 안쪽 내용을 그대로 쓰면 됩니다.]
-  
-  // (지면 관계상 핵심 렌더링 부분만 다시 적어드립니다. 위 코드의 렌더링 로직을 그대로 사용하세요)
   const renderCalendarView = () => (
     <>
       <div style={dashboardStyle}>
@@ -551,7 +544,6 @@ function App() {
         {/* 상단바 */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
           <h2 style={{ fontSize: "18px", margin: 0 }}>My 가계부 (공유중 🟢)</h2>
-          {/* 자동저장이므로 백업 버튼 제거/숨김 처리 */}
         </div>
 
         {activeTab !== 'list' && (

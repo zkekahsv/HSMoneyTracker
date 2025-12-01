@@ -16,6 +16,7 @@ const firebaseConfig = {
   measurementId: "G-ZRFZHSGZVG"
 };
 
-// Initialize Firebase
+// 파이어베이스 초기화
+// (여기가 중요합니다! 변수명을 정확히 firebaseConfig로 넣어야 합니다.)
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+export const db = getFirestore(app);
