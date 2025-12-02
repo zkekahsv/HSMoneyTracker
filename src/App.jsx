@@ -1,8 +1,7 @@
-// src/App.jsx
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { INITIAL_DATA } from "./data/initialData";
 import SimpleCalendar from "./components/SimpleCalendar"; 
-import { db } from "./fbase"; 
+import { db } from "./fbase"; // 중요: ./fbase 로 경로 수정됨
 import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 // --- 스타일 정의 ---
@@ -48,14 +47,8 @@ const dashLabelStyle = { fontSize: "12px", color: "#64748b", marginBottom: "5px"
 const dashValueStyle = (color) => ({ fontSize: "16px", fontWeight: "bold", color: color });
 
 const typeToggleContainer = { display: "flex", gap: "10px", marginBottom: "10px" };
-
-// [수정된 부분] 중복된 border 속성을 완전히 제거했습니다.
 const typeBtnStyle = (isActive, type) => ({
-  flex: 1, 
-  padding: "10px", 
-  borderRadius: "8px", 
-  fontWeight: "bold", 
-  cursor: "pointer",
+  flex: 1, padding: "10px", borderRadius: "8px", fontWeight: "bold", cursor: "pointer",
   backgroundColor: isActive ? (type === "income" ? "#eff6ff" : "#fef2f2") : "#f3f4f6",
   color: isActive ? (type === "income" ? "#2563eb" : "#ef4444") : "#9ca3af",
   border: isActive ? (type === "income" ? "2px solid #2563eb" : "2px solid #ef4444") : "2px solid transparent"
@@ -69,7 +62,6 @@ const EXPENSE_CATEGORIES = ["식비", "교통/차량", "쇼핑", "문화/여가"
 const INCOME_CATEGORIES = ["월급", "용돈", "보너스", "당근마켓", "기타수입"];
 const CATEGORY_COLORS = { "식비": "#f87171", "교통/차량": "#fb923c", "쇼핑": "#fbbf24", "문화/여가": "#a3e635", "생활/마트": "#34d399", "육아/교육": "#22d3ee", "경조사": "#818cf8", "기타": "#a78bfa" };
 
-// --- DB Doc ID (우리 가족 공유 키) ---
 const DOC_ID = "family_budget_v1"; 
 
 function App() {
@@ -80,7 +72,6 @@ function App() {
   const [activeTab, setActiveTab] = useState("calendar");
   const [isLoading, setIsLoading] = useState(true);
 
-  // Firestore에서 실시간으로 받아올 상태들
   const [allData, setAllData] = useState({ wallets: [], months: {} });
   const [transactions, setTransactions] = useState([]);
   
@@ -104,15 +95,14 @@ function App() {
   const [editingNameVal, setEditingNameVal] = useState(""); 
   const [searchTerm, setSearchTerm] = useState("");
 
+  const fileInputRef = useRef(null);
+
   const currentMonthData = allData.months && allData.months[monthKey] 
     ? allData.months[monthKey] 
     : { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses };
 
-  // --- 🔥 Firebase 실시간 연동 (핵심) ---
   useEffect(() => {
-    // 1. 데이터 구독 (누가 수정하면 즉시 반영됨)
     const docRef = doc(db, "budget", DOC_ID);
-    
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const remoteData = docSnap.data();
@@ -120,7 +110,6 @@ function App() {
         setTransactions(remoteData.transactions || []);
         setIsLoading(false);
       } else {
-        // 데이터가 아예 없으면(처음) 초기값으로 생성
         const initPayload = {
           allData: { wallets: INITIAL_DATA.wallets, months: { [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } },
           transactions: []
@@ -128,15 +117,12 @@ function App() {
         setDoc(docRef, initPayload);
       }
     });
-
     return () => unsubscribe();
   }, []);
 
-  // --- 🔥 Firebase 저장 함수 ---
   const saveToFirebase = async (newAllData, newTransactions) => {
     if(newAllData) setAllData(newAllData);
     if(newTransactions) setTransactions(newTransactions);
-
     try {
       const docRef = doc(db, "budget", DOC_ID);
       await updateDoc(docRef, {
@@ -145,17 +131,13 @@ function App() {
       });
     } catch (e) {
       console.error("저장 실패:", e);
-      alert("인터넷 연결을 확인해주세요. 저장이 안 됐을 수 있습니다.");
+      alert("인터넷 연결을 확인해주세요.");
     }
   };
 
-  // --- Effects (자동 월 데이터 생성) ---
   useEffect(() => {
     if (!isLoading && allData.months && !allData.months[monthKey]) {
-      const newData = { 
-        ...allData, 
-        months: { ...allData.months, [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } 
-      };
+      const newData = { ...allData, months: { ...allData.months, [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } };
       saveToFirebase(newData, null);
     }
   }, [monthKey, isLoading, allData.months]);
@@ -165,7 +147,6 @@ function App() {
       setSelectedWalletId(allData.wallets[0].id);
     }
   }, [allData.wallets, selectedWalletId]);
-
 
   const handlePrevMonth = () => {
     let newYear = year; let newMonth = month - 1;
@@ -186,12 +167,11 @@ function App() {
   const handleDateClick = (date) => {
     setSelectedDate(date);
     setIsModalOpen(true); 
-    setInputDesc(""); setInputAmount(""); setTxType("expense"); 
-    setInputCategory("식비");
+    setInputDesc(""); setInputAmount(""); setTxType("expense"); setInputCategory("식비");
   };
 
   const handleFillWallets = () => {
-    if (!window.confirm("지갑 잔액을 설정된 예산 금액으로 초기화하시겠습니까? (공유된 모든 사람에게 반영됩니다)")) return;
+    if (!window.confirm("지갑 잔액을 설정된 예산 금액으로 초기화하시겠습니까?")) return;
     const resetWallets = allData.wallets.map(w => {
        const initialW = INITIAL_DATA.wallets.find(iw => iw.id === w.id);
        if (initialW) { return { ...w, balance: initialW.balance }; }
@@ -202,14 +182,11 @@ function App() {
     alert("지갑 잔액이 채워졌습니다!");
   };
 
-  // --- Transactions ---
   const handleAddTransaction = () => {
     if (!inputDesc || !inputAmount) return alert("내용과 금액을 입력해주세요!");
     if (!selectedWalletId) return alert("통장을 선택해주세요!");
     const amount = Number(inputAmount);
-    const newTx = { 
-      id: Date.now(), date: selectedDate, desc: inputDesc, amount: amount, walletId: selectedWalletId, type: txType, category: inputCategory
-    };
+    const newTx = { id: Date.now(), date: selectedDate, desc: inputDesc, amount: amount, walletId: selectedWalletId, type: txType, category: inputCategory };
     
     const newTxs = [...transactions, newTx];
     const updatedWallets = allData.wallets.map(wallet => {
@@ -220,7 +197,6 @@ function App() {
       return wallet;
     });
     const newData = { ...allData, wallets: updatedWallets };
-    
     saveToFirebase(newData, newTxs);
     setIsModalOpen(false); setInputDesc(""); setInputAmount("");
   };
@@ -228,8 +204,7 @@ function App() {
   const handleDeleteTransaction = (txId) => {
     const targetTx = transactions.find(tx => tx.id === txId);
     if (!targetTx) return;
-    if (!window.confirm("이 내역을 삭제하시겠습니까? (잔액이 원상복구됩니다)")) return;
-    
+    if (!window.confirm("이 내역을 삭제하시겠습니까?")) return;
     const newTxs = transactions.filter(tx => tx.id !== txId);
     const updatedWallets = allData.wallets.map(wallet => {
       if (wallet.id === targetTx.walletId) {
@@ -242,7 +217,6 @@ function App() {
     saveToFirebase(newData, newTxs);
   };
 
-  // --- Stats Calculation ---
   const monthlyStats = useMemo(() => {
     const totalFixedIncome = currentMonthData.income.total;
     const totalFixedExpense = currentMonthData.fixedExpenses.autoTransfers.reduce((s, i) => s + i.amount, 0) + 
@@ -253,14 +227,12 @@ function App() {
     const totalIncome = totalFixedIncome + variableIncome;
     const totalExpense = totalFixedExpense + variableExpense;
     const balance = totalIncome - totalExpense;
-    
     const catStats = {};
     monthTxs.filter(tx => !tx.type || tx.type === 'expense').forEach(tx => {
       const cat = tx.category || "기타";
       catStats[cat] = (catStats[cat] || 0) + tx.amount;
     });
     const sortedCatStats = Object.entries(catStats).sort((a, b) => b[1] - a[1]);
-
     return { totalIncome, totalExpense, balance, sortedCatStats, variableExpense };
   }, [currentMonthData, transactions, monthKey]);
 
@@ -278,7 +250,6 @@ function App() {
     if (!info[cardDay]) info[cardDay] = 0;
     const totalCard = mData.fixedExpenses.cardBills.reduce((sum, item) => sum + item.amount, 0);
     info[cardDay] -= totalCard;
-
     transactions.forEach(tx => {
       if (!info[tx.date]) info[tx.date] = 0;
       if (tx.type === 'income') info[tx.date] += tx.amount;
@@ -287,12 +258,10 @@ function App() {
     return info;
   }, [transactions, currentMonthData, year, month]);
 
-  // Firebase 저장용 래퍼 함수들
   const handleEditAmount = (type, category, id, currentVal, name) => {
     const inputVal = window.prompt(`[${name}]의 수정할 금액을 입력하세요:`, currentVal);
     if (inputVal === null || inputVal.trim() === "") return;
     const newAmount = Number(inputVal); if (isNaN(newAmount)) return alert("숫자만 입력해주세요.");
-    
     const prevMonthData = allData.months[monthKey] || currentMonthData;
     let updatedMonthData = { ...prevMonthData };
     if (type === "income") {
@@ -373,8 +342,7 @@ function App() {
   };
 
   const handleReset = () => { 
-    if (window.confirm("🚨 전체 데이터를 초기화하시겠습니까? (공유된 모든 데이터가 삭제됩니다)")) { 
-      // DB를 초기 데이터로 리셋
+    if (window.confirm("🚨 전체 데이터를 초기화하시겠습니까?")) { 
       const initPayload = {
         allData: { wallets: INITIAL_DATA.wallets, months: { [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } },
         transactions: []
@@ -384,9 +352,49 @@ function App() {
     } 
   };
 
+  // --- 중요: 빠졌던 코드 복구 ---
+  const getFixedEvents = (dateStr) => {
+    if (!dateStr) return [];
+    const parts = dateStr.split("-"); if (parts.length < 3) return [];
+    const day = Number(parts[2]);
+    const events = []; const mData = currentMonthData;
+    if (day === 25) events.push({ type: "income", name: "💰 월급날", amount: mData.income.total, items: mData.income.items });
+    if (day === 26) events.push({ type: "expense", name: "🏦 자동이체 나가는 날", amount: mData.fixedExpenses.autoTransfers.reduce((a, b) => a + b.amount, 0), items: mData.fixedExpenses.autoTransfers });
+    if (day === 15) events.push({ type: "expense", name: "💳 카드값/공과금 내는 날", amount: mData.fixedExpenses.cardBills.reduce((a, b) => a + b.amount, 0), items: mData.fixedExpenses.cardBills });
+    return events;
+  };
+
+  // ⚠️ 여기가 에러가 났던 지점입니다! 이제는 정의되어 있습니다.
+  const selectedFixedEvents = getFixedEvents(selectedDate);
+
   if (isLoading) return <div style={{display:"flex",justifyContent:"center",alignItems:"center",height:"100vh"}}>로딩중...</div>;
 
-  // ... 렌더링 로직 (기존과 거의 동일) ...
+  const RenderListItem = ({ item, type, category }) => {
+    const isEditing = editingItemId === item.id;
+    if (isEditing) {
+      return (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px", backgroundColor: "#fff9c4", padding: "4px", borderRadius: "4px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+            <input value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} style={editInputNameStyle} autoFocus />
+          </div>
+          <div style={{ display: "flex", gap: "2px" }}>
+            <button onClick={() => saveEditingName(type, category, item.id)} style={actionBtnStyle("white", "#10b981")}>저장</button>
+            <button onClick={() => handleDeleteFixedItem(type, category, item.id)} style={actionBtnStyle("white", "#ef4444")}>삭제</button>
+            <button onClick={() => setEditingItemId(null)} style={actionBtnStyle("#555", "#e5e7eb")}>취소</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px", alignItems: "center" }}>
+        <span onClick={() => startEditingName(item.id, item.name)} style={clickableNameStyle}>{item.name}</span>
+        <span onClick={() => handleEditAmount(type, category, item.id, item.amount, item.name)} style={clickableAmountStyle(type === "income" ? "blue" : "red")}>
+          {type === "income" ? "+" : "-"}{item.amount.toLocaleString()}
+        </span>
+      </div>
+    );
+  };
+
   const renderCalendarView = () => (
     <>
       <div style={dashboardStyle}>
@@ -400,7 +408,6 @@ function App() {
       <button onClick={() => setShowFixedList(!showFixedList)} style={toggleBtnStyle}>{showFixedList ? "🔼 목록 접기" : "📋 고정 수입/지출 목록 관리"}</button>
       {showFixedList && (
         <div style={{ ...cardStyle, border: "2px solid #2563eb", backgroundColor: "#f0f9ff" }}>
-          {/* ... 고정 지출 렌더링 ... */}
           <div style={listGroupStyle}>
             <div style={listHeaderStyle}>💰 고정 수입 (25일)</div>
             {currentMonthData.income.items.map(item => <RenderListItem key={item.id} item={item} type="income" category={null} />)}
