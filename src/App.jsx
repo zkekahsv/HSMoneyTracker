@@ -1,7 +1,8 @@
+// src/App.jsx
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { INITIAL_DATA } from "./data/initialData";
 import SimpleCalendar from "./components/SimpleCalendar"; 
-import { db } from "./fbase"; // 중요: ./fbase 로 경로 수정됨
+import { db } from "./fbase"; 
 import { doc, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 // --- 스타일 정의 ---
@@ -32,6 +33,8 @@ const deleteTxBtnStyle = { fontSize: "12px", padding: "4px 8px", marginLeft: "10
 const addWalletStyle = { display: "flex", gap: "5px", marginTop: "10px", paddingTop: "10px", borderTop: "1px dashed #eee" };
 const fillWalletBtnStyle = { width: "100%", padding: "8px", marginBottom: "10px", backgroundColor: "#10b981", color: "white", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", fontSize: "13px" };
 
+const chargeBtnStyle = { fontSize: "11px", padding: "4px 8px", marginLeft: "8px", backgroundColor: "#dbeafe", color: "#2563eb", border: "none", borderRadius: "4px", cursor: "pointer", fontWeight: "bold" };
+
 const actionBtnStyle = (color, bg) => ({ fontSize: "11px", padding: "3px 6px", marginLeft: "4px", backgroundColor: bg, color: color, border: "none", borderRadius: "4px", cursor: "pointer" });
 const editInputNameStyle = { width: "120px", padding: "3px", fontSize: "13px", border: "1px solid #2563eb", borderRadius: "3px" };
 const addItemBtnStyle = { width: "100%", padding: "5px", marginTop: "5px", border: "1px dashed #aaa", borderRadius: "5px", background: "none", color: "#666", fontSize: "12px", cursor: "pointer" };
@@ -57,10 +60,12 @@ const typeBtnStyle = (isActive, type) => ({
 const modalOverlayStyle = { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.5)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1000 };
 const modalContentStyle = { backgroundColor: "white", padding: "25px", borderRadius: "15px", width: "90%", maxWidth: "400px", boxShadow: "0 4px 10px rgba(0,0,0,0.2)", position: "relative" };
 const closeBtnStyle = { position: "absolute", top: "15px", right: "15px", background: "none", border: "none", fontSize: "18px", cursor: "pointer", color: "#999" };
+const backupBtnStyle = { fontSize: "12px", padding: "6px 12px", backgroundColor: "#475569", color: "white", border: "none", borderRadius: "6px", cursor: "pointer", marginLeft: "10px" };
+const restoreBtnStyle = { fontSize: "12px", padding: "6px 12px", backgroundColor: "#cbd5e1", color: "#334155", border: "none", borderRadius: "6px", cursor: "pointer", marginLeft: "5px" };
 
-const EXPENSE_CATEGORIES = ["식비", "교통/차량", "쇼핑", "문화/여가", "생활/마트", "육아/교육", "경조사", "기타"];
-const INCOME_CATEGORIES = ["월급", "용돈", "보너스", "당근마켓", "기타수입"];
-const CATEGORY_COLORS = { "식비": "#f87171", "교통/차량": "#fb923c", "쇼핑": "#fbbf24", "문화/여가": "#a3e635", "생활/마트": "#34d399", "육아/교육": "#22d3ee", "경조사": "#818cf8", "기타": "#a78bfa" };
+const EXPENSE_CATEGORIES = ["식비", "교통/차량", "쇼핑", "문화/여가", "생활/마트", "육아/교육", "경조사", "기타", "지갑이체"];
+const INCOME_CATEGORIES = ["월급", "용돈", "보너스", "당근마켓", "기타수입", "지갑이체"];
+const CATEGORY_COLORS = { "식비": "#f87171", "교통/차량": "#fb923c", "쇼핑": "#fbbf24", "문화/여가": "#a3e635", "생활/마트": "#34d399", "육아/교육": "#22d3ee", "경조사": "#818cf8", "기타": "#a78bfa", "지갑이체": "#60a5fa" };
 
 const DOC_ID = "family_budget_v1"; 
 
@@ -101,6 +106,7 @@ function App() {
     ? allData.months[monthKey] 
     : { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses };
 
+  // --- Firebase ---
   useEffect(() => {
     const docRef = doc(db, "budget", DOC_ID);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -148,6 +154,7 @@ function App() {
     }
   }, [allData.wallets, selectedWalletId]);
 
+  // --- Handlers ---
   const handlePrevMonth = () => {
     let newYear = year; let newMonth = month - 1;
     if (newMonth < 1) { newMonth = 12; newYear -= 1; }
@@ -170,8 +177,29 @@ function App() {
     setInputDesc(""); setInputAmount(""); setTxType("expense"); setInputCategory("식비");
   };
 
+  const handleChargeWallet = (item) => {
+    const targetWallet = allData.wallets.find(w => w.name === item.name);
+    let updatedWallets;
+
+    if (targetWallet) {
+      if(!window.confirm(`[${item.name}] 지갑에 ${item.amount.toLocaleString()}원을 채울까요?\n(잔액만 변경되고 캘린더에는 기록되지 않습니다.)`)) return;
+      updatedWallets = allData.wallets.map(w => 
+        w.id === targetWallet.id ? { ...w, balance: w.balance + item.amount } : w
+      );
+    } else {
+      if(!window.confirm(`[${item.name}] 지갑을 새로 만들고 채울까요?\n(잔액만 변경되고 캘린더에는 기록되지 않습니다.)`)) return;
+      const newWallet = { id: `w_${Date.now()}`, name: item.name, balance: item.amount, type: 'cash' };
+      updatedWallets = [...allData.wallets, newWallet];
+    }
+
+    const newData = { ...allData, wallets: updatedWallets };
+    saveToFirebase(newData, null);
+    alert(`${item.name} 잔액 충전 완료!`);
+  };
+
+
   const handleFillWallets = () => {
-    if (!window.confirm("지갑 잔액을 설정된 예산 금액으로 초기화하시겠습니까?")) return;
+    if (!window.confirm("지갑 잔액을 초기 설정값으로 리셋하시겠습니까?")) return;
     const resetWallets = allData.wallets.map(w => {
        const initialW = INITIAL_DATA.wallets.find(iw => iw.id === w.id);
        if (initialW) { return { ...w, balance: initialW.balance }; }
@@ -179,7 +207,7 @@ function App() {
     });
     const newData = { ...allData, wallets: resetWallets };
     saveToFirebase(newData, null);
-    alert("지갑 잔액이 채워졌습니다!");
+    alert("지갑 잔액이 리셋되었습니다!");
   };
 
   const handleAddTransaction = () => {
@@ -341,18 +369,67 @@ function App() {
     } 
   };
 
-  const handleReset = () => { 
-    if (window.confirm("🚨 전체 데이터를 초기화하시겠습니까?")) { 
-      const initPayload = {
-        allData: { wallets: INITIAL_DATA.wallets, months: { [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } } },
-        transactions: []
+  // --- 🔥 [중요] 해당 월 데이터만 초기화 (지갑 잔액 유지) ---
+  const handleReset = async () => { 
+    if (window.confirm(`🚨 정말 [${month}월] 데이터를 초기화하시겠습니까?\n(고정 내역 초기화, ${month}월 기록 삭제, 지갑 잔액 원복)`)) { 
+      
+      // 1. 이번 달 내역 찾기
+      const txsToDelete = transactions.filter(tx => tx.date.startsWith(monthKey));
+      const txsToKeep = transactions.filter(tx => !tx.date.startsWith(monthKey));
+
+      // 2. 지갑 잔액 원상복구 (삭제될 내역만큼 반대로 계산)
+      let updatedWallets = [...allData.wallets];
+      txsToDelete.forEach(tx => {
+        const targetIndex = updatedWallets.findIndex(w => w.id === tx.walletId);
+        if (targetIndex >= 0) {
+          if (tx.type === 'income') {
+            updatedWallets[targetIndex] = { ...updatedWallets[targetIndex], balance: updatedWallets[targetIndex].balance - tx.amount };
+          } else {
+            updatedWallets[targetIndex] = { ...updatedWallets[targetIndex], balance: updatedWallets[targetIndex].balance + tx.amount };
+          }
+        }
+      });
+
+      // 3. 이번 달 고정 수입/지출을 기본값으로 되돌리기
+      const newMonths = { 
+        ...allData.months, 
+        [monthKey]: { income: INITIAL_DATA.income, fixedExpenses: INITIAL_DATA.fixedExpenses } 
       };
-      saveToFirebase(initPayload.allData, initPayload.transactions);
-      window.location.reload(); 
+
+      // 4. 최종 저장
+      const newAllData = { ...allData, wallets: updatedWallets, months: newMonths };
+      await saveToFirebase(newAllData, txsToKeep);
+      
+      alert(`${month}월 데이터가 초기화되었습니다.`);
     } 
   };
 
-  // --- 중요: 빠졌던 코드 복구 ---
+  const handleExport = () => {
+    const backupData = { allData: allData, transactions: transactions, date: new Date().toISOString() };
+    const jsonString = JSON.stringify(backupData, null, 2);
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a"); link.href = href;
+    const dateStr = new Date().toISOString().split('T')[0];
+    link.download = `가계부백업_${dateStr}.json`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+
+  const handleImportClick = () => { fileInputRef.current.click(); };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target.result);
+        if (!parsed.allData || !parsed.transactions) { alert("올바른 파일 아님"); return; }
+        if (window.confirm("정말 덮어쓰시겠습니까?")) { saveToFirebase(parsed.allData, parsed.transactions); alert("복원 완료!"); }
+      } catch (err) { alert("오류 발생"); }
+    };
+    reader.readAsText(file); e.target.value = "";
+  };
+
   const getFixedEvents = (dateStr) => {
     if (!dateStr) return [];
     const parts = dateStr.split("-"); if (parts.length < 3) return [];
@@ -364,7 +441,6 @@ function App() {
     return events;
   };
 
-  // ⚠️ 여기가 에러가 났던 지점입니다! 이제는 정의되어 있습니다.
   const selectedFixedEvents = getFixedEvents(selectedDate);
 
   if (isLoading) return <div style={{display:"flex",justifyContent:"center",alignItems:"center",height:"100vh"}}>로딩중...</div>;
@@ -388,6 +464,12 @@ function App() {
     return (
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "6px", alignItems: "center" }}>
         <span onClick={() => startEditingName(item.id, item.name)} style={clickableNameStyle}>{item.name}</span>
+        
+        {/* 🔥 [버튼] 지갑으로 받기 (자동 생성/충전) */}
+        {category === 'autoTransfers' && (
+          <button onClick={() => handleChargeWallet(item)} style={chargeBtnStyle}>📥 지갑으로 받기</button>
+        )}
+
         <span onClick={() => handleEditAmount(type, category, item.id, item.amount, item.name)} style={clickableAmountStyle(type === "income" ? "blue" : "red")}>
           {type === "income" ? "+" : "-"}{item.amount.toLocaleString()}
         </span>
@@ -447,29 +529,9 @@ function App() {
         </div>
       )}
 
-      {transactions.filter(tx => tx.date === selectedDate).length > 0 && (
-        <div style={cardStyle}>
-          <div style={titleStyle}>📝 {selectedDate} 내역</div>
-          {transactions.filter(tx => tx.date === selectedDate).map(tx => (
-            <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:"bold"}}>{tx.desc}</div>
-                <div style={{fontSize:"11px", color:"#666"}}>{tx.category || "기타"} | {allData.wallets && allData.wallets.find(w=>w.id===tx.walletId)?.name || "삭제된통장"}</div>
-              </div>
-              <div style={{textAlign:"right"}}>
-                <span style={{ color: tx.type === 'income' ? "blue" : "red", fontWeight: "bold", display:"block" }}>
-                  {tx.type === 'income' ? "+" : "-"}{tx.amount.toLocaleString()}원
-                </span>
-                <button onClick={() => handleDeleteTransaction(tx.id)} style={deleteTxBtnStyle}>삭제</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div style={cardStyle}>
         <div style={titleStyle}>👛 지갑 잔액 현황</div>
-        <button onClick={handleFillWallets} style={fillWalletBtnStyle}>🔄 예산대로 지갑 잔액 채우기</button>
+        {/* <button onClick={handleFillWallets} style={fillWalletBtnStyle}>🔄 초기 예산으로 전체 리셋</button> */}
         <div style={{ marginBottom: "15px" }}>
           {allData.wallets && allData.wallets.map(w => (
             <div key={w.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
@@ -551,6 +613,11 @@ function App() {
         {/* 상단바 */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
           <h2 style={{ fontSize: "18px", margin: 0 }}>My 가계부 (공유중 🟢)</h2>
+          <div style={{ display: "flex", gap: "5px" }}>
+            <button onClick={handleExport} style={backupBtnStyle}>💾 백업</button>
+            <button onClick={handleImportClick} style={restoreBtnStyle}>📂 복원</button>
+            <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileChange} accept="application/json" />
+          </div>
         </div>
 
         {activeTab !== 'list' && (
@@ -560,7 +627,10 @@ function App() {
             <button onClick={handleNextMonth} style={navBtnStyle}>▶</button>
           </div>
         )}
-        <div style={{ textAlign: "right", marginBottom: "10px" }}><button onClick={handleReset} style={resetBtnStyle}>초기화</button></div>
+        <div style={{ textAlign: "right", marginBottom: "10px" }}>
+          {/* 🔥 [변경] 해당 달만 초기화하는 버튼 */}
+          <button onClick={handleReset} style={resetBtnStyle}>{month}월 초기화</button>
+        </div>
 
         {activeTab === 'calendar' && renderCalendarView()}
         {activeTab === 'list' && renderListView()}
@@ -578,6 +648,30 @@ function App() {
           <div style={modalContentStyle} onClick={(e) => e.stopPropagation()}>
             <button style={closeBtnStyle} onClick={() => setIsModalOpen(false)}>✕</button>
             <div style={titleStyle}>{selectedDate} 기록</div>
+            
+            {/* 📝 이날의 내역 리스트 */}
+            <div style={{ marginBottom: "20px", maxHeight: "150px", overflowY: "auto", borderBottom: "1px dashed #eee", paddingBottom: "10px" }}>
+              {transactions.filter(tx => tx.date === selectedDate).length === 0 ? 
+                <div style={{color: "#999", fontSize: "13px", textAlign: "center"}}>내역이 없습니다.</div> 
+                :
+                transactions.filter(tx => tx.date === selectedDate).map(tx => (
+                  <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #f0f0f0" }}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize: "13px", fontWeight:"bold"}}>{tx.desc}</div>
+                      <div style={{fontSize:"11px", color:"#666"}}>{tx.category} | {allData.wallets && allData.wallets.find(w=>w.id===tx.walletId)?.name}</div>
+                    </div>
+                    <div style={{textAlign:"right", display:"flex", alignItems:"center"}}>
+                      <span style={{ color: tx.type === 'income' ? "blue" : "red", fontWeight: "bold", fontSize: "13px", marginRight: "5px" }}>
+                        {tx.type === 'income' ? "+" : "-"}{tx.amount.toLocaleString()}
+                      </span>
+                      <button onClick={() => handleDeleteTransaction(tx.id)} style={{...deleteTxBtnStyle, padding: "2px 5px", fontSize: "11px"}}>삭제</button>
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
+
+            <div style={titleStyle}>➕ 새 내역 추가</div>
             <div style={typeToggleContainer}>
               <button onClick={() => setTxType("expense")} style={typeBtnStyle(txType === "expense", "expense")}>🔴 지출 (-)</button>
               <button onClick={() => setTxType("income")} style={typeBtnStyle(txType === "income", "income")}>🔵 수입 (+)</button>

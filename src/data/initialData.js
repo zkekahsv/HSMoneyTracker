@@ -1,5 +1,7 @@
+// src/data/initialData.js
+
 export const INITIAL_DATA = {
-  // 1. 수입 (매월 25일)
+  // 1. 수입
   income: {
     total: 4070000,
     items: [
@@ -8,7 +10,7 @@ export const INITIAL_DATA = {
     ]
   },
 
-  // 2. 고정 지출
+  // 2. 고정 지출 (항목은 그대로 둡니다)
   fixedExpenses: {
     autoTransfers: [
       { id: "at_1", name: "농협352(박예은/학원비)", amount: 490000, desc: "선우어린이집(18)+태권도(15)+보험(16)" },
@@ -41,15 +43,6 @@ export const INITIAL_DATA = {
     ]
   },
 
-  // 3. 지출 지갑 (초기 잔액 설정됨)
-  wallets: [
-    { id: "w_1", name: "💳 신용카드", balance: 0, type: "card" },
-    { id: "w_2", name: "🍚 현수 밥값(카뱅)", balance: 300000, type: "cash" },
-    { id: "w_3", name: "🏊 수영통장(농협)", balance: 220000, type: "cash" },
-    { id: "w_4", name: "⛽ 기름값(농협)", balance: 100000, type: "cash" },
-    { id: "w_5", name: "🎉 경조사(농협)", balance: 50000, type: "cash" },
-    { id: "w_6", name: "👶 시우선우(국민)", balance: 500000, type: "cash" },
-    { id: "w_7", name: "👩 생활비(농협302)", balance: 600000, type: "cash" },
-    { id: "w_8", name: "💰 국민99595(추가)", balance: 0, type: "cash" }
-  ]
+  // 3. 지갑 (텅 빈 상태로 시작!)
+  wallets: [] 
 };
